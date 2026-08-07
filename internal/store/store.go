@@ -92,6 +92,20 @@ type TaskRepo interface {
 	UpdateProgress(ctx context.Context, id string, progress *float64, queuePosition *int, etaSeconds *float64) error
 	SetUpstreamRef(ctx context.Context, id, upstreamRef, rawStatus string) error
 	CountRunningByModel(ctx context.Context, userID, modelID string) (int, error)
+
+	// SetNextPoll 排定下一次轮询时刻，PollScheduler 靠它驱动
+	// idx_tasks_status_next_poll 那条索引扫描。
+	SetNextPoll(ctx context.Context, id string, at time.Time) error
+	// IncrementAttempt 自增重试计数并返回新值，用于 RetryInfo 与耗尽判定。
+	IncrementAttempt(ctx context.Context, id string) (int, error)
+	// SetActualCost 记录成功后的实扣额度。
+	SetActualCost(ctx context.Context, id string, actual int) error
+	// Requeue 把一条终态任务打回 queued（管理端手动重试）。
+	// **不动 estimated_cost、不重新冻结积分**：原来那笔 hold 还在，
+	// 重新冻结会在余额已被别的任务占满时把一条本可重试的任务卡死。
+	Requeue(ctx context.Context, id string) error
+	// Stats 汇总统计窗口内的任务表现，供管理端监控。
+	Stats(ctx context.Context, window time.Duration, label string) (domain.TaskStats, error)
 }
 
 // EventRepo 持久化 SSE 事件，供断线补发。
@@ -132,6 +146,18 @@ type AssetRepo interface {
 	AddLineage(ctx context.Context, edges []domain.LineageEdge) error
 	Lineage(ctx context.Context, assetID string, dir domain.LineageDirection, depth int) (domain.LineageGraph, error)
 	SumBytes(ctx context.Context, userID string) (int64, int, error)
+
+	// SetVariants 落库派生规格的存储键。派生是转存之后的独立一步，
+	// 且允许失败（见 asset.Deriver），因此它不能挤进 Create 的参数里——
+	// 那会逼着调用方在缩略图还没生成时就把 asset 攥在手上不落库。
+	SetVariants(ctx context.Context, assetID string, thumbKey, posterKey *string) error
+	// ListSoftDeleted 列出软删早于 before 的资产，供 admin 清理任务回收字节。
+	ListSoftDeleted(ctx context.Context, before time.Time, limit int) ([]domain.Asset, error)
+	// HardDelete 物理删除一条资产记录（连同其血缘边由外键级联）。
+	// 只允许 admin 清理任务调用，用户侧的删除一律是 Delete 的软删。
+	HardDelete(ctx context.Context, id string) error
+	// StorageUsage 汇总全站存储用量，供 admin 总览。
+	StorageUsage(ctx context.Context, topN int) (domain.StorageUsage, error)
 }
 
 // LedgerRepo 读写积分流水。

@@ -33,6 +33,11 @@ type Asset struct {
 	// StorageKey 是本平台存储里的键，asset.Store 用它取二进制。
 	// 只在服务端流转，不下发前端（前端只认 Original 这类 URL）。
 	StorageKey string `json:"-"`
+	// ThumbKey / PosterKey 是派生规格的存储键，与 StorageKey 同理不下发。
+	// Original / Thumb512 / Poster 三个 URL 字段由 httpapi 层按这三个 key
+	// 投影出来——URL 形态属于传输层，把它烧进仓储会让换域名变成一次数据迁移。
+	ThumbKey  *string `json:"-"`
+	PosterKey *string `json:"-"`
 
 	MIME       string `json:"mime,omitempty"`
 	Bytes      int64  `json:"bytes,omitempty"`
@@ -95,8 +100,7 @@ const (
 	LineageBoth        LineageDirection = "both"
 )
 
-// Upload 是**临时对象**：24h 未被任务引用即回收；被任务引用后由 L3 提升为 Asset。
-// 它与 Asset 分开，是因为「用户传上来的素材」和「平台生成的产物」在配额、
+// Upload 是**临时对象**：24h 未被任务引用即回收；被任务引用后由 L3 提升为 Asset。// 它与 Asset 分开，是因为「用户传上来的素材」和「平台生成的产物」在配额、
 // 生命周期、血缘上的语义都不同。
 type Upload struct {
 	ID         string    `json:"upload_id"`
@@ -112,4 +116,44 @@ type Upload struct {
 	CreatedAt  time.Time `json:"-"`
 	// AssetID 在该 upload 被任务引用并提升为 asset 后写入，回收扫描据此跳过它。
 	AssetID *string `json:"-"`
+}
+
+// StorageUserUsage 是存储用量总览里的单个用户条目。
+type StorageUserUsage struct {
+	UserID     string `json:"user_id"`
+	Username   string `json:"username"`
+	UsedBytes  int64  `json:"used_bytes"`
+	QuotaBytes int64  `json:"quota_bytes"`
+}
+
+// StorageUsage 是 GET /api/admin/storage/usage 的响应体。
+//
+// UploadPendingBytes 与 SoftDeletedBytes 单列，是因为这两块是**可回收**的：
+// 只给一个总数，管理员看到磁盘满了也不知道有多少是能清掉的。
+type StorageUsage struct {
+	TotalBytes         int64              `json:"total_bytes"`
+	AssetCount         int                `json:"asset_count"`
+	UploadPendingBytes int64              `json:"upload_pending_bytes"`
+	SoftDeletedBytes   int64              `json:"soft_deleted_bytes"`
+	TopUsers           []StorageUserUsage `json:"top_users,omitempty"`
+}
+
+// CleanupTarget 是清理动作的目标集合。
+type CleanupTarget string
+
+const (
+	CleanupOrphanFiles       CleanupTarget = "orphan_files"
+	CleanupExpiredUploads    CleanupTarget = "expired_uploads"
+	CleanupSoftDeletedAssets CleanupTarget = "soft_deleted_assets"
+)
+
+// CleanupResult 是 POST /api/admin/storage/cleanup 的响应体。
+//
+// DryRun 默认为 true 不是保守，是必要：清理是不可逆的，管理员应当先看一眼
+// 候选集合再决定是否真删。Samples 最多 20 条，够判断"选中的是不是我想删的那批"。
+type CleanupResult struct {
+	DryRun         bool     `json:"dry_run"`
+	CandidateCount int      `json:"candidate_count"`
+	ReclaimedBytes int64    `json:"reclaimed_bytes"`
+	Samples        []string `json:"samples,omitempty"`
 }

@@ -34,6 +34,11 @@ type Queue interface {
 	Claim(ctx context.Context, owner string, ttl time.Duration, providerIDs []string) (Lease, bool, error)
 	Renew(ctx context.Context, taskID, owner string, ttl time.Duration) error
 	Release(ctx context.Context, taskID, owner string) error
+
+	// ClaimPoll 领取一批到点该轮询的 running 任务（next_poll_at <= now），
+	// 同样打租约。它与 Claim 分开，是因为两者扫的是不同的索引、也不该互相
+	// 饿死：一个 worker 池被大量待轮询任务占满时，新提交的任务仍要能被领走。
+	ClaimPoll(ctx context.Context, owner string, ttl time.Duration, limit int) ([]Lease, error)
 }
 
 // Runner 执行一条已领取的任务。

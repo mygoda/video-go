@@ -1,15 +1,14 @@
-BINARY      := aigcd
-BIN_DIR     := bin
-PKG         := ./...
-MIGRATE_DIR := ./migrations
+BINARY  := aigcd
+BIN_DIR := bin
+PKG     := ./...
 
-.PHONY: build run vet test migrate-up migrate-down
+.PHONY: build run vet test smoke db-up db-down migrate-up migrate-down seed dev clean
 
 build:
 	go build -o $(BIN_DIR)/$(BINARY) ./cmd/aigcd
 
 run:
-	go run ./cmd/aigcd
+	go run ./cmd/aigcd serve
 
 vet:
 	go vet $(PKG)
@@ -17,14 +16,39 @@ vet:
 test:
 	go test $(PKG)
 
-# migrate-up / migrate-down shell out to the `migrate` CLI
-# (https://github.com/golang-migrate/migrate) against $AIGC_MYSQL_DSN.
-# The DSN is read from the environment on purpose: it carries credentials and
-# must never be baked into the Makefile or committed.
+# smoke 打的是另一台已经在跑的服务，因此不依赖任何本地目标：
+# 先在一个终端 make run，再在另一个终端 make smoke。
+# 目标地址取 AIGC_SMOKE_BASE_URL，默认 http://localhost:8080。
+smoke:
+	go run ./scripts/smoke
+
+# ── 本地依赖 ─────────────────────────────────────────────────────────
+# db-up 拉起本地 MySQL 8.4。docker-compose.yml 里的口令是明摆着的开发占位符，
+# 任何共享环境都不该用它。
+db-up:
+	docker compose up -d
+	@echo "waiting for mysql to become healthy..."
+	@until [ "$$(docker inspect -f '{{.State.Health.Status}}' aigc-pool-mysql 2>/dev/null)" = "healthy" ]; do sleep 1; done
+	@echo "mysql is ready"
+
+db-down:
+	docker compose down
+
+# ── 迁移与种子 ───────────────────────────────────────────────────────
+# 迁移由 aigcd 自己跑，不依赖外部 golang-migrate CLI：
+# 「照着 README 走能从零到可用」不该卡在让人先装一个 Go 工具上。
+# DSN 仍只从环境读（AIGC_MYSQL_DSN），它带凭证，不能写进 Makefile。
 migrate-up:
-	@test -n "$(AIGC_MYSQL_DSN)" || (echo "AIGC_MYSQL_DSN is not set" && exit 1)
-	migrate -path $(MIGRATE_DIR) -database "mysql://$(AIGC_MYSQL_DSN)" up
+	go run ./cmd/aigcd migrate up
 
 migrate-down:
-	@test -n "$(AIGC_MYSQL_DSN)" || (echo "AIGC_MYSQL_DSN is not set" && exit 1)
-	migrate -path $(MIGRATE_DIR) -database "mysql://$(AIGC_MYSQL_DSN)" down 1
+	go run ./cmd/aigcd migrate down 1
+
+seed:
+	go run ./cmd/aigcd seed
+
+# dev 是从零到可用的一条龙：起库 → 建表 → 灌种子 → 起服务。
+dev: db-up migrate-up seed run
+
+clean:
+	rm -rf $(BIN_DIR)

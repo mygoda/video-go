@@ -146,3 +146,27 @@ type TaskFilter struct {
 	Cursor    string
 	Limit     int
 }
+
+// TaskModelStat 是某个模型在统计窗口内的表现。
+type TaskModelStat struct {
+	ModelID            string   `json:"model_id"`
+	Total              int      `json:"total"`
+	Failed             int      `json:"failed"`
+	P50DurationSeconds *float64 `json:"p50_duration_seconds"`
+}
+
+// TaskStats 是 GET /api/admin/tasks/stats 的响应体。
+//
+// Queued / Running 单列而不是只给 ByStatus，是因为这两个数字回答的是运维当下
+// 最想知道的那个问题（队列积压了吗、还有多少在跑），不该逼人从一个 map 里翻。
+// OldestQueuedAgeSeconds 是积压是否恶化的唯一可靠信号：队列深度不变但最老的
+// 那条越来越老，说明有任务卡住了而不是流量平稳。
+type TaskStats struct {
+	Window                 string                `json:"window"`
+	Queued                 int                   `json:"queued"`
+	Running                int                   `json:"running"`
+	OldestQueuedAgeSeconds *float64              `json:"oldest_queued_age_seconds"`
+	ByStatus               map[TaskStatus]int    `json:"by_status"`
+	ByErrorCode            map[TaskErrorCode]int `json:"by_error_code"`
+	ByModel                []TaskModelStat       `json:"by_model,omitempty"`
+}

@@ -11,6 +11,7 @@
 package config
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -36,6 +37,8 @@ const (
 	DefaultWriteTimeout      = time.Duration(0)
 	DefaultIdleTimeout       = 120 * time.Second
 	DefaultStorageRoot       = "./data/storage"
+	DefaultPublicBaseURL     = "http://localhost:8080"
+	DefaultCORSOrigins       = "*"
 	DefaultJWTSecretEnv      = "AIGC_JWT_SECRET"
 	DefaultJWTTTL            = 720 * time.Hour
 	DefaultWorkerConcurrency = 4
@@ -59,6 +62,16 @@ type Config struct {
 	// StorageRoot 是 L3 资产落盘的根目录。上游产物在任务成功那一刻转存到这里。
 	StorageRoot string
 
+	// PublicBaseURL 是本服务对外可达的根地址。它有两个用途：
+	// 一是拼出 Asset.Original 这类下发前端的 URL，二是把本地输入素材的地址
+	// 交给上游回源拉取（图生图时上游要能访问到参考图）。
+	// 本地开发时上游访问不到 localhost，这正是 mock driver 存在的另一个理由。
+	PublicBaseURL string
+
+	// CORSOrigins 是允许的前端来源，逗号分隔；"*" 表示不限制。
+	// 本地前后端分离开发必须放行 Vite 的来源。
+	CORSOrigins []string
+
 	// JWTSecretEnv 是**存放密钥的那个环境变量的名字**，
 	// JWTSecret 是从它读出来的值。与 Provider.CredentialRef 同一套思路：
 	// 配置里出现的是变量名，密钥本身只活在环境里。
@@ -77,11 +90,15 @@ type Config struct {
 // 必填项缺失时把**全部**缺失项一次性报出来，而不是报第一个就返回：
 // 第一次跑起来的人不该改一个变量重试一次。
 func Load() (*Config, error) {
+	loadDotEnv(".env")
+
 	var missing []string
 
 	cfg := &Config{
-		HTTPAddr:    envString("HTTP_ADDR", DefaultHTTPAddr),
-		StorageRoot: envString("STORAGE_ROOT", DefaultStorageRoot),
+		HTTPAddr:      envString("HTTP_ADDR", DefaultHTTPAddr),
+		StorageRoot:   envString("STORAGE_ROOT", DefaultStorageRoot),
+		PublicBaseURL: strings.TrimRight(envString("PUBLIC_BASE_URL", DefaultPublicBaseURL), "/"),
+		CORSOrigins:   splitCSV(envString("CORS_ORIGINS", DefaultCORSOrigins)),
 	}
 
 	var err error
@@ -140,6 +157,8 @@ func (c *Config) Redacted() map[string]string {
 		"http_addr":          c.HTTPAddr,
 		"shutdown_timeout":   c.ShutdownTimeout.String(),
 		"storage_root":       c.StorageRoot,
+		"public_base_url":    c.PublicBaseURL,
+		"cors_origins":       strings.Join(c.CORSOrigins, ","),
 		"mysql_dsn":          "(set via " + Prefix + "MYSQL_DSN)",
 		"jwt_secret":         "(set via " + c.JWTSecretEnv + ")",
 		"jwt_ttl":            c.JWTTTL.String(),
@@ -154,6 +173,45 @@ func envString(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// loadDotEnv 把项目根的 .env 灌进进程环境，**不覆盖已存在的变量**。
+//
+// 这与"只从环境变量读"并不矛盾：.env 已在 .gitignore 里，它是开发者本机
+// 那份环境的落盘形态，不是提交进仓库的配置文件。不做这件事，`make run`
+// 就得写成一长串 env 前缀，而 README 的第一条命令越长越没人照着走。
+// 已设置的变量优先，是为了让 `AIGC_HTTP_ADDR=:9090 make run` 这种临时覆盖生效。
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if len(val) >= 2 && (val[0] == '"' && val[len(val)-1] == '"' || val[0] == '\'' && val[len(val)-1] == '\'') {
+			val = val[1 : len(val)-1]
+		}
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		_ = os.Setenv(key, val)
+	}
 }
 
 // envDuration 读取一个 time.ParseDuration 形态的变量（如 "15s"、"720h"）。
@@ -183,4 +241,16 @@ func envInt(key string, def int) (int, error) {
 		return 0, fmt.Errorf("config: %s%s is not a valid integer (%q): %w", Prefix, key, raw, err)
 	}
 	return n, nil
+}
+
+// splitCSV 把逗号分隔的列表切成去空白、去空项的切片。
+func splitCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
