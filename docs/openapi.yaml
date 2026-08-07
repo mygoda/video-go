@@ -1,0 +1,2563 @@
+openapi: 3.1.0
+
+info:
+  title: AIGC Pool API
+  version: 0.1.0
+  summary: 多模型 AIGC 创作平台的对外契约（用户端 + 管理端）
+  description: |
+    本文件是 **前后端唯一契约**，前端据此 mock 并行开发，后端据此实现。
+
+    ## 与 capability-schema.ts 的关系
+
+    `#/components/schemas/ModelCapabilitySchema` 及其所有子 schema 是
+    `docs/contracts/capability-schema.ts` 的逐字段镜像。**两者必须同步修改**，
+    任一方单独改动即视为破坏契约。TypeScript 侧是权威定义，本文件是它的传输层表述。
+
+    ## 约定
+
+    - 所有时间戳为 RFC3339（UTC，例 `2026-08-07T15:04:05Z`）。
+    - 所有 ID 为字符串，前端**只做透传，不解析其内容**。
+    - 所有错误响应统一为 `#/components/schemas/ErrorEnvelope`，前端按 `error.code` 分支，
+      **不解析 `error.message`**。
+    - 列表接口一律**游标分页**（`cursor` / `next_cursor`），不提供 offset。
+      理由：资产瀑布流在有新产物时 offset 会重复/漏项。
+    - 认证为 `Authorization: Bearer <JWT>`。管理接口额外要求 `role=admin`，
+      路由前缀 `/api/admin`，越权返回 403 `forbidden`。
+
+    ## 隐式分流
+
+    `POST /api/tasks` **没有 mode 字段**。传了 `inputs.reference_images` 就是图生图，
+    没传就是文生图，由后端按输入槽是否为空路由。前端不参与这个判断。
+
+servers:
+  - url: http://localhost:8080
+    description: 本地开发（本阶段不部署）
+
+tags:
+  - name: auth
+    description: 最简登录（账号密码，无第三方登录）
+  - name: models
+    description: L1 能力声明层的对外出口
+  - name: tasks
+    description: L2 执行层的对外出口
+  - name: stream
+    description: 实时通道（SSE，轮询兜底）
+  - name: uploads
+  - name: assets
+    description: L3 资产层，含血缘
+  - name: canvas
+    description: 画布持久化（增量 op）
+  - name: skills
+  - name: me
+  - name: admin
+    description: 管理后台后端 API（页面另开 issue）
+  - name: webhooks
+    description: 上游回调入口（本地开发默认走轮询，此处为预留）
+
+security:
+  - bearerAuth: []
+
+paths:
+  ############################################################
+  # auth
+  ############################################################
+  /api/auth/register:
+    post:
+      tags: [auth]
+      summary: 注册
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: 注册成功，直接下发 token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: 用户名已存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: 登录
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  ############################################################
+  # me
+  ############################################################
+  /api/me:
+    get:
+      tags: [me]
+      summary: 当前用户（积分与存储配额）
+      operationId: getMe
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/me/password:
+    post:
+      tags: [me]
+      summary: 修改密码
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: { type: string, format: password }
+                new_password: { type: string, format: password, minLength: 8 }
+      responses:
+        '204': { description: 修改成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/me/credit-ledger:
+    get:
+      tags: [me]
+      summary: 自己的积分流水
+      operationId: listMyCreditLedger
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditLedgerPage' }
+
+  ############################################################
+  # models (L1)
+  ############################################################
+  /api/models:
+    get:
+      tags: [models]
+      summary: 拉取模型能力声明
+      operationId: listModels
+      description: |
+        返回当前启用的模型的 capability schema 数组。前端据此渲染动态表单，
+        **接一个走已知协议的新模型 = 后台加一条配置记录，前端零改动**。
+
+        响应带 `ETag`；前端可用 `If-None-Match` 拿 304。模型池每周在变，
+        因此 `Cache-Control: no-cache`（必须回源校验）而不是 max-age。
+      parameters:
+        - name: modality
+          in: query
+          description: 不传则返回全部
+          schema: { $ref: '#/components/schemas/Modality' }
+        - name: If-None-Match
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              description: 模型配置版本指纹，配置变更即变
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string, examples: ['no-cache'] }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items: { $ref: '#/components/schemas/ModelCapabilitySchema' }
+        '304': { description: 未变更 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  ############################################################
+  # uploads
+  ############################################################
+  /api/uploads:
+    post:
+      tags: [uploads]
+      summary: 上传输入素材
+      operationId: createUpload
+      description: |
+        `multipart/form-data` 直传，支持 XHR 进度事件。返回的 `upload_id`
+        填进 `POST /api/tasks` 的 `inputs`。
+
+        upload 是**临时对象**，24h 未被任务引用即回收；被任务引用后由 L3 提升为 asset。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                slot:
+                  type: string
+                  description: 目标输入槽 key，用于按 InputSlotSpec 做服务端校验
+            encoding:
+              file:
+                contentType: image/png, image/jpeg, image/webp, video/mp4
+      responses:
+        '201':
+          description: 上传成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Upload' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '413':
+          description: 超出该输入槽的 max_bytes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  ############################################################
+  # tasks (L2)
+  ############################################################
+  /api/tasks:
+    post:
+      tags: [tasks]
+      summary: 提交生成任务
+      operationId: createTask
+      description: |
+        **异步**。返回即代表已入队，绝不同步等待生成结果（生成是分钟级的）。
+
+        `client_token` 是幂等键：同一用户 24h 内重复提交同一个 token
+        直接返回**已存在的任务**（200 而非 201），断网重发不会产生两个任务、不会重复扣费。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateTaskRequest' }
+      responses:
+        '201':
+          description: 已入队
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateTaskResponse' }
+        '200':
+          description: 幂等命中，返回已存在的任务
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateTaskResponse' }
+        '400':
+          description: 参数非法（`invalid_param`，带 field_errors，未扣费）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '402':
+          description: 积分不足（`insufficient_credit`）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '429':
+          description: 达到该模型的 max_concurrent_per_user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+    get:
+      tags: [tasks]
+      summary: 任务列表 / 活跃任务对账
+      operationId: listTasks
+      description: |
+        `status=active` 返回该用户**全部**未终结任务（queued + running），不分页——
+        这是 SSE 重连后的对账接口，分页会让对账失去意义。
+        其余取值走游标分页。
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, queued, running, succeeded, failed, canceled, all]
+            default: all
+        - name: canvas_id
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskPage' }
+
+  /api/tasks/{taskId}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      summary: 任务详情
+      operationId: getTask
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/tasks/{taskId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      summary: 取消任务
+      operationId: cancelTask
+      description: |
+        `queued` 可取消并全额退回冻结积分；`running` 尽力取消（能取消的上游调用上游取消，
+        不能的标记为 canceled 并**不扣费**）；终态任务返回 409。
+      responses:
+        '200':
+          description: 已取消
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '409':
+          description: 任务已处于终态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  ############################################################
+  # stream
+  ############################################################
+  /api/stream:
+    get:
+      tags: [stream]
+      summary: 实时事件流（SSE）
+      operationId: streamEvents
+      description: |
+        **一条连接推该用户的全部任务**，不是每任务一条。
+
+        - 支持 `Last-Event-ID` 请求头补发断线期间的事件（事件 id 为单调递增整数）。
+        - 每 15s 一条 `ping`，穿透代理空闲超时。
+        - 响应必须 `Cache-Control: no-cache`、`X-Accel-Buffering: no`、**不开 gzip 缓冲**，
+          否则事件会成批到达，实时性归零。
+        - 原生 `EventSource` 不能带 `Authorization` 头，前端用 fetch + ReadableStream 手写解析；
+          因此本端点**必须**接受 Bearer 头（不接受 query token）。
+
+        事件类型与 data 结构：
+
+        | event | data schema |
+        |---|---|
+        | `task.updated` | `TaskUpdatedEvent` |
+        | `task.succeeded` | `TaskSucceededEvent` |
+        | `task.failed` | `TaskFailedEvent` |
+        | `credit.updated` | `CreditUpdatedEvent` |
+        | `canvas.card.updated` | `CanvasCardUpdatedEvent` |
+        | `ping` | `{}` |
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          description: 上次收到的事件 id，服务端补发其后的事件
+          schema: { type: string }
+      responses:
+        '200':
+          description: 事件流
+          headers:
+            Cache-Control:
+              schema: { type: string, examples: ['no-cache'] }
+            X-Accel-Buffering:
+              schema: { type: string, examples: ['no'] }
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                sample:
+                  value: |
+                    event: task.updated
+                    id: 10241
+                    data: {"task_id":"t_9","status":"running","progress":0.4,"queue_position":null,"eta_seconds":12}
+
+                    event: task.succeeded
+                    id: 10242
+                    data: {"task_id":"t_9","assets":[{"id":"a_3","type":"image","thumb_512":"/api/assets/a_3/content?variant=thumb_512","original":"/api/assets/a_3/content?variant=original"}]}
+
+                    event: ping
+                    data: {}
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  ############################################################
+  # assets (L3)
+  ############################################################
+  /api/assets:
+    get:
+      tags: [assets]
+      summary: 资产列表（游标分页）
+      operationId: listAssets
+      parameters:
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/AssetType' }
+        - name: task_id
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetPage' }
+
+  /api/assets/{assetId}:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      tags: [assets]
+      summary: 资产详情
+      operationId: getAsset
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [assets]
+      summary: 删除资产（软删，释放配额）
+      operationId: deleteAsset
+      responses:
+        '204': { description: 已删除 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/assets/{assetId}/lineage:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      tags: [assets]
+      summary: 资产血缘（谁生成了谁）
+      operationId: getAssetLineage
+      description: 「做同款」与「单卡重跑」依赖本接口。向上追输入，向下追派生。
+      parameters:
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [ancestors, descendants, both]
+            default: both
+        - name: depth
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 5, default: 2 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LineageGraph' }
+
+  /api/assets/{assetId}/content:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+      - name: variant
+        in: query
+        schema:
+          type: string
+          enum: [original, thumb_512, poster]
+          default: original
+    get:
+      tags: [assets]
+      summary: 取产物二进制
+      operationId: getAssetContent
+      description: |
+        产物一律由本平台自己的存储提供，**绝不返回上游 URL**
+        （上游 URL 24h 就失效，见 tech-design §L3）。支持 Range 以便视频拖动。
+      responses:
+        '200':
+          description: 二进制内容
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '206': { description: Range 分片 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  ############################################################
+  # skills
+  ############################################################
+  /api/skills:
+    get:
+      tags: [skills]
+      summary: Skill 列表
+      operationId: listSkills
+      description: |
+        Skill 是一条**可插拔的记录**（预置系统提示词 + 默认模型参数），不是硬编码分支。
+        注意不下发 `system_prompt` 原文，只给 `system_prompt_ref`。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [skills]
+                properties:
+                  skills:
+                    type: array
+                    items: { $ref: '#/components/schemas/Skill' }
+
+  ############################################################
+  # canvas
+  ############################################################
+  /api/projects:
+    get:
+      tags: [canvas]
+      summary: 画布项目列表
+      operationId: listProjects
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectPage' }
+    post:
+      tags: [canvas]
+      summary: 新建画布项目
+      operationId: createProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 120 }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+
+  /api/projects/{projectId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [canvas]
+      summary: 项目元信息
+      operationId: getProject
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [canvas]
+      summary: 改名等元信息
+      operationId: updateProject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 120 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Project' }
+    delete:
+      tags: [canvas]
+      summary: 删除项目
+      operationId: deleteProject
+      responses:
+        '204': { description: 已删除 }
+
+  /api/projects/{projectId}/canvas:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [canvas]
+      summary: 拉取画布全量
+      operationId: getCanvas
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CanvasSnapshot' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [canvas]
+      summary: 提交增量 op
+      operationId: patchCanvas
+      description: |
+        **不做全量 PUT**：几百张卡片每次几百 KB，拖一下卡片就发一次纯浪费。
+
+        `base_revision` 不匹配（另一个标签页改了同一画布）→ 409 `revision_conflict`，
+        前端拉全量覆盖本地。MVP 不做 CRDT（明确不做协作）。
+
+        服务端按顺序落库这串 op，天然满足「创作过程可回放」。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CanvasPatchRequest' }
+      responses:
+        '200':
+          description: 已应用
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision]
+                properties:
+                  revision: { type: integer, format: int64 }
+        '409':
+          description: revision 冲突，需拉全量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /api/canvas/{projectId}/chat:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      tags: [canvas]
+      summary: 画布内对话
+      operationId: canvasChat
+      description: |
+        走 Chat 协议族。`ref_card_ids` 是「多卡引用为下次输入」的载体（AutoLink 的本质，
+        不需要连线）。Agent 可能在回复中直接产出若干生成任务，其 task_id 一并返回，
+        后续状态走 SSE。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CanvasChatRequest' }
+      responses:
+        '202':
+          description: 已受理
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CanvasChatResponse' }
+        '402':
+          description: 积分不足
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /api/canvas/{projectId}/compose:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      tags: [canvas]
+      summary: 一键成片
+      operationId: composeVideo
+      description: 前端只负责顺序确认，拼接在后端。产出一张新的视频卡片。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [card_ids]
+              properties:
+                card_ids:
+                  type: array
+                  description: 已按用户确认的顺序排列
+                  minItems: 2
+                  items: { type: string }
+                client_token: { type: string }
+      responses:
+        '201':
+          description: 已入队
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateTaskResponse' }
+
+  ############################################################
+  # webhooks（预留，本地默认轮询）
+  ############################################################
+  /api/webhooks/tasks/{driver}:
+    parameters:
+      - name: driver
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/VideoProtocol' }
+    post:
+      tags: [webhooks]
+      summary: 上游任务回调入口
+      operationId: upstreamTaskCallback
+      security: []
+      description: |
+        Ark 与 Sora 均支持 webhook。本地开发无公网地址，默认**关闭**并走轮询；
+        端点在此预留，打开只需配置。鉴权走每 provider 一个共享密钥的签名头，
+        密钥从 env 读，不入库不入代码。回调与轮询是幂等的两条同源路径——
+        回调只是把轮询提前，任何一条都能独立推进状态机。
+      parameters:
+        - name: X-Callback-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 上游原样投递的报文，由对应 driver 解析
+              additionalProperties: true
+      responses:
+        '204': { description: 已受理 }
+        '401': { description: 签名校验失败 }
+
+  ############################################################
+  # admin —— 模型 / 供应商配置
+  ############################################################
+  /api/admin/providers:
+    get:
+      tags: [admin]
+      summary: 供应商列表
+      operationId: adminListProviders
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers:
+                    type: array
+                    items: { $ref: '#/components/schemas/Provider' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [admin]
+      summary: 新建供应商
+      operationId: adminCreateProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderUpsert' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/providers/{providerId}:
+    parameters:
+      - name: providerId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [admin]
+      summary: 供应商详情
+      operationId: adminGetProvider
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [admin]
+      summary: 修改供应商
+      operationId: adminUpdateProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderUpsert' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+    delete:
+      tags: [admin]
+      summary: 删除供应商（仍被模型引用时 409）
+      operationId: adminDeleteProvider
+      responses:
+        '204': { description: 已删除 }
+        '409':
+          description: 仍被模型引用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /api/admin/models:
+    get:
+      tags: [admin]
+      summary: 模型配置列表（含已禁用）
+      operationId: adminListModels
+      parameters:
+        - name: modality
+          in: query
+          schema: { $ref: '#/components/schemas/Modality' }
+        - name: enabled
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items: { $ref: '#/components/schemas/ModelConfig' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [admin]
+      summary: 新增模型
+      operationId: adminCreateModel
+      description: |
+        **管理后台存在的首要理由。** 接一个走已知协议的新模型 = 在此加一条记录，
+        前端零改动、后端零发版（配置热生效，见 tech-design §配置热更新）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelConfigUpsert' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelConfig' }
+        '400':
+          description: capability schema 或 request_mapping 校验失败
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /api/admin/models/{modelId}:
+    parameters:
+      - name: modelId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [admin]
+      summary: 模型配置详情
+      operationId: adminGetModel
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelConfig' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [admin]
+      summary: 修改模型配置
+      operationId: adminUpdateModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelConfigUpsert' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelConfig' }
+    delete:
+      tags: [admin]
+      summary: 删除模型配置
+      operationId: adminDeleteModel
+      responses:
+        '204': { description: 已删除 }
+
+  /api/admin/models/{modelId}/probe:
+    parameters:
+      - name: modelId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [admin]
+      summary: 配置连通性自检
+      operationId: adminProbeModel
+      description: |
+        用最小参数走一次真实 driver 的 Submit（可选 `dry_run` 只做 mapping 渲染不发请求），
+        用于新增配置后立刻验证 base_url / 凭证 / request_mapping 是否可用，
+        不必等真实用户踩坑。**不扣积分，不产生 asset。**
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dry_run:
+                  type: boolean
+                  default: true
+                  description: true 时只渲染上游请求体并返回，不发起真实调用
+      responses:
+        '200':
+          description: 自检结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProbeResult' }
+
+  ############################################################
+  # admin —— 用户与积分
+  ############################################################
+  /api/admin/users:
+    get:
+      tags: [admin]
+      summary: 用户列表
+      operationId: adminListUsers
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUserPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [admin]
+      summary: 用户详情
+      operationId: adminGetUser
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUser' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [admin]
+      summary: 修改角色 / 状态 / 存储配额
+      operationId: adminUpdateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { $ref: '#/components/schemas/UserRole' }
+                status: { $ref: '#/components/schemas/UserStatus' }
+                storage_quota_bytes: { type: integer, format: int64, minimum: 0 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUser' }
+
+  /api/admin/users/{userId}/credits:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [admin]
+      summary: 手工充值 / 扣减积分
+      operationId: adminAdjustCredits
+      description: |
+        PRD 定的「管理员手工充值」，不接支付网关。`amount` 为正是充值、为负是扣减。
+        `idempotency_key` 必填，防止管理员重复点击充两次。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, idempotency_key]
+              properties:
+                amount: { type: integer, description: 正=充值，负=扣减 }
+                reason: { type: string, maxLength: 200 }
+                idempotency_key: { type: string, maxLength: 64 }
+      responses:
+        '200':
+          description: 已入账
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditLedgerEntry' }
+        '409':
+          description: 幂等键已使用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /api/admin/users/{userId}/credit-ledger:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+    get:
+      tags: [admin]
+      summary: 用户积分流水
+      operationId: adminListCreditLedger
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditLedgerPage' }
+
+  ############################################################
+  # admin —— 任务监控
+  ############################################################
+  /api/admin/tasks:
+    get:
+      tags: [admin]
+      summary: 全量任务监控
+      operationId: adminListTasks
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TaskStatus' }
+        - name: model_id
+          in: query
+          schema: { type: string }
+        - name: user_id
+          in: query
+          schema: { type: string }
+        - name: error_code
+          in: query
+          schema: { $ref: '#/components/schemas/TaskErrorCode' }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTaskPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/admin/tasks/stats:
+    get:
+      tags: [admin]
+      summary: 队列状态与失败分布
+      operationId: adminTaskStats
+      parameters:
+        - name: window
+          in: query
+          schema:
+            type: string
+            enum: [1h, 24h, 7d]
+            default: 24h
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskStats' }
+
+  /api/admin/tasks/{taskId}/retry:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [admin]
+      summary: 手动重试
+      operationId: adminRetryTask
+      description: 把失败任务打回 `queued`，重用原冻结额度，不二次扣费。
+      responses:
+        '200':
+          description: 已重新入队
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+
+  /api/admin/tasks/{taskId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [admin]
+      summary: 强制取消
+      operationId: adminCancelTask
+      responses:
+        '200':
+          description: 已取消
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+
+  /api/admin/circuit-breakers:
+    get:
+      tags: [admin]
+      summary: 供应商熔断状态（故障隔离可观测）
+      operationId: adminListCircuitBreakers
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [breakers]
+                properties:
+                  breakers:
+                    type: array
+                    items: { $ref: '#/components/schemas/CircuitBreakerState' }
+
+  ############################################################
+  # admin —— 存储配额
+  ############################################################
+  /api/admin/storage/usage:
+    get:
+      tags: [admin]
+      summary: 存储用量总览
+      operationId: adminStorageUsage
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StorageUsage' }
+
+  /api/admin/storage/cleanup:
+    post:
+      tags: [admin]
+      summary: 清理孤儿文件与过期上传
+      operationId: adminStorageCleanup
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dry_run: { type: boolean, default: true }
+                older_than_days: { type: integer, minimum: 1, default: 30 }
+                target:
+                  type: string
+                  enum: [orphan_files, expired_uploads, soft_deleted_assets]
+                  default: expired_uploads
+      responses:
+        '200':
+          description: 清理结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CleanupResult' }
+
+  ############################################################
+  # admin —— Skill
+  ############################################################
+  /api/admin/skills:
+    get:
+      tags: [admin]
+      summary: Skill 列表（含 system_prompt 原文）
+      operationId: adminListSkills
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [skills]
+                properties:
+                  skills:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminSkill' }
+    post:
+      tags: [admin]
+      summary: 新增 Skill
+      operationId: adminCreateSkill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminSkillUpsert' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminSkill' }
+
+  /api/admin/skills/{skillId}:
+    parameters:
+      - name: skillId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [admin]
+      summary: 修改 Skill
+      operationId: adminUpdateSkill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminSkillUpsert' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminSkill' }
+    delete:
+      tags: [admin]
+      summary: 删除 Skill
+      operationId: adminDeleteSkill
+      responses:
+        '204': { description: 已删除 }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      description: 上一页返回的 next_cursor，不透明字符串
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string }
+    AssetId:
+      name: assetId
+      in: path
+      required: true
+      schema: { type: string }
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: 参数非法
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthorized:
+      description: 未认证或 token 失效（前端统一拦截跳登录）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: 非管理员访问管理接口
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: 不存在或无权访问
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+    ####################################################
+    # 基础
+    ####################################################
+    JsonValue:
+      description: 任意 JSON 值（对应 capability-schema.ts 的 JsonValue）
+
+    Modality:
+      type: string
+      enum: [image, video]
+
+    Timestamp:
+      type: string
+      format: date-time
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ApiError' }
+      description: |
+        **所有**错误响应统一为该结构。前端严格按 `error.code` 呈现，不解析 message。
+
+    TaskErrorCode:
+      type: string
+      description: |
+        **与 capability-schema.ts 的 `TaskErrorCode` 逐值一致，不多不少。**
+        前三类是 PRD 定义的失败三分类，**三类都不扣费**
+        （`charged` 恒为 false，但仍显式回传，前端据此显示「未扣费」）。
+      enum:
+        - invalid_param
+        - upstream_rate_limited
+        - content_rejected
+        - insufficient_credit
+        - internal_error
+
+    ApiErrorCode:
+      type: string
+      description: |
+        HTTP 层错误码 = `TaskErrorCode` 全集 + 若干传输层码。
+        分成两个枚举而不是往 `TaskErrorCode` 里塞，是为了让 `TaskErrorCode`
+        与 TypeScript 契约保持**逐值可对拍**：任务失败分类是产品语义，
+        401/403/404 是传输语义，混在一起前端的失败三分类分支会被污染。
+        前端遇到未知 code 按 `internal_error` 降级呈现，不允许白屏。
+      enum:
+        - invalid_param
+        - upstream_rate_limited
+        - content_rejected
+        - insufficient_credit
+        - internal_error
+        - unauthorized
+        - forbidden
+        - not_found
+        - conflict
+        - revision_conflict
+        - rate_limited
+        - quota_exceeded
+
+    ApiError:
+      allOf:
+        - $ref: '#/components/schemas/TaskError'
+        - type: object
+          properties:
+            code: { $ref: '#/components/schemas/ApiErrorCode' }
+
+    TaskError:
+      type: object
+      description: |
+        `docs/contracts/capability-schema.ts` 的 `TaskError` 的镜像。
+        挂在 `Task.error` 与 SSE `task.failed` 上。
+      required: [code, message, retryable, charged]
+      properties:
+        code: { $ref: '#/components/schemas/TaskErrorCode' }
+        message: { type: string }
+        field_errors:
+          type: array
+          description: 仅 invalid_param 携带，key 对应 ParamSpec.key 或 InputSlotSpec.key
+          items:
+            type: object
+            required: [key, message]
+            properties:
+              key: { type: string }
+              message: { type: string }
+        retryable: { type: boolean }
+        charged:
+          type: boolean
+          description: 失败三分类恒为 false
+        retry:
+          type: object
+          description: upstream_rate_limited 时携带，用于展示「正在自动重试 (2/5)」
+          required: [attempt, max_attempts]
+          properties:
+            attempt: { type: integer }
+            max_attempts: { type: integer }
+            next_at: { $ref: '#/components/schemas/Timestamp' }
+
+    ####################################################
+    # auth / me
+    ####################################################
+    RegisterRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password: { type: string, format: password, minLength: 8 }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+
+    AuthResponse:
+      type: object
+      required: [token, expires_at, user]
+      properties:
+        token:
+          type: string
+          description: 'JWT，前端存 localStorage 并走 Authorization: Bearer'
+        expires_at: { $ref: '#/components/schemas/Timestamp' }
+        user: { $ref: '#/components/schemas/Me' }
+
+    UserRole:
+      type: string
+      enum: [user, admin]
+
+    UserStatus:
+      type: string
+      enum: [active, disabled]
+
+    Me:
+      type: object
+      required: [id, username, role, credits, credits_held, storage_used, storage_quota]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        role: { $ref: '#/components/schemas/UserRole' }
+        credits:
+          type: integer
+          description: 可用余额（已扣除冻结额度）
+        credits_held:
+          type: integer
+          description: 进行中任务冻结的额度
+        storage_used: { type: integer, format: int64 }
+        storage_quota: { type: integer, format: int64 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    ####################################################
+    # ModelCapabilitySchema —— capability-schema.ts 的逐字段镜像
+    ####################################################
+    ModelCapabilitySchema:
+      type: object
+      required: [id, name, vendor, modality, enabled, order, inputs, params, pricing, eta, limits]
+      properties:
+        id:
+          type: string
+          description: 稳定标识，提交任务时原样回传。前端只做透传，绝不解析其内容
+        name: { type: string }
+        vendor:
+          type: string
+          description: 仅用于展示与故障提示。**前端禁止按此分支**
+        modality: { $ref: '#/components/schemas/Modality' }
+        enabled: { type: boolean }
+        disabled_reason: { type: string }
+        order: { type: integer }
+        description: { type: string }
+        preview_url: { type: string }
+        inputs:
+          type: array
+          items: { $ref: '#/components/schemas/InputSlotSpec' }
+        params:
+          type: array
+          items: { $ref: '#/components/schemas/ParamSpec' }
+        pricing: { $ref: '#/components/schemas/PricingSpec' }
+        eta: { $ref: '#/components/schemas/EtaSpec' }
+        limits: { $ref: '#/components/schemas/LimitSpec' }
+
+    InputSlotSpec:
+      type: object
+      description: |
+        输入槽决定「传了图走图生图 / 没传走文生」这条隐式分流。
+        `required=false` 的槽 = 可选输入 = 隐式分流点。
+      required: [key, label, kind, required, min_count, max_count, accept, max_bytes]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        kind:
+          type: string
+          enum: [image, video, audio]
+        required: { type: boolean }
+        min_count: { type: integer, minimum: 0 }
+        max_count: { type: integer, minimum: 1 }
+        accept:
+          type: array
+          items: { type: string }
+        max_bytes: { type: integer, format: int64 }
+        min_pixels: { $ref: '#/components/schemas/PixelSize' }
+        max_pixels: { $ref: '#/components/schemas/PixelSize' }
+        hint: { type: string }
+
+    PixelSize:
+      type: object
+      required: [width, height]
+      properties:
+        width: { type: integer }
+        height: { type: integer }
+
+    ControlKind:
+      type: string
+      description: |
+        8 种控件覆盖实测的全部参数芯片。**新增枚举值 = 一次前端改动**，
+        因此新增前先确认现有控件真的表达不了。前端遇到未知 control 必须降级渲染，不允许白屏。
+      enum: [select, aspect_select, compound, stepper, slider, toggle, seed, textarea]
+
+    ParamSpecBase:
+      type: object
+      required: [key, label, control, group, order, default]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        control: { $ref: '#/components/schemas/ControlKind' }
+        group:
+          type: string
+          enum: [primary, advanced]
+          description: primary → 主参数芯片条；advanced → ⚙ 折叠面板
+        order: { type: integer }
+        default:
+          $ref: '#/components/schemas/JsonValue'
+        help: { type: string }
+        visible_when: { $ref: '#/components/schemas/Condition' }
+        enabled_when: { $ref: '#/components/schemas/Condition' }
+        disabled_hint: { type: string }
+
+    OptionItem:
+      type: object
+      required: [value, label]
+      properties:
+        value: { $ref: '#/components/schemas/JsonValue' }
+        label: { type: string }
+        badge:
+          type: string
+          description: 选项右侧小标签，如 "+2 积分" / "慢"
+        disabled: { type: boolean }
+        disabled_reason: { type: string }
+
+    AspectOption:
+      allOf:
+        - $ref: '#/components/schemas/OptionItem'
+        - type: object
+          required: [ratio_w, ratio_h]
+          properties:
+            ratio_w: { type: number }
+            ratio_h: { type: number }
+            pixels: { $ref: '#/components/schemas/PixelSize' }
+
+    SelectSpec:
+      allOf:
+        - $ref: '#/components/schemas/ParamSpecBase'
+        - type: object
+          required: [options]
+          properties:
+            control: { const: select }
+            options:
+              type: array
+              items: { $ref: '#/components/schemas/OptionItem' }
+            render_hint:
+              type: string
+              enum: [dropdown, segmented]
+
+    AspectSelectSpec:
+      allOf:
+        - $ref: '#/components/schemas/ParamSpecBase'
+        - type: object
+          required: [options]
+          properties:
+            control: { const: aspect_select }
+            options:
+              type: array
+              items: { $ref: '#/components/schemas/AspectOption' }
+
+    CompoundSpec:
+      allOf:
+        - $ref: '#/components/schemas/ParamSpecBase'
+        - type: object
+          description: |
+            复合控件：把多个语义相关的字段塞进同一个芯片。
+            提交时 fields 各自作为独立 key **平铺**进 params，compound 本身不产生 key。
+          required: [fields, display_template]
+          properties:
+            control: { const: compound }
+            fields:
+              type: array
+              items: { $ref: '#/components/schemas/ParamSpec' }
+            display_template:
+              type: string
+              description: 芯片标签模板，用 {fieldKey} 占位，如 "{aspect} · {count}张"
+            default:
+              type: 'null'
+              description: compound 自身 default 恒为 null，真实默认值在各 field 内
+
+    StepperSpec:
+      allOf:
+        - $ref: '#/components/schemas/ParamSpecBase'
+        - type: object
+          required: [min, max, step]
+          properties:
+            control: { const: stepper }
+            min: { type: number }
+            max: { type: number }
+            step: { type: number }
+            unit: { type: string }
+
+    SliderSpec:
+      allOf:
+        - $ref: '#/components/schemas/ParamSpecBase'
+        - type: object
+          required: [min, max, step]
+          properties:
+            control: { const: slider }
+            min: { type: number }
+            max: { type: number }
+            step: { type: number }
+            unit: { type: string }
+
+    ToggleSpec:
+      allOf:
+        - $ref: '#/components/schemas/ParamSpecBase'
+        - type: object
+          properties:
+            control: { const: toggle }
+
+    SeedSpec:
+      allOf:
+        - $ref: '#/components/schemas/ParamSpecBase'
+        - type: object
+          required: [min, max, allow_random]
+          properties:
+            control: { const: seed }
+            min: { type: number }
+            max: { type: number }
+            allow_random:
+              type: boolean
+              description: true 时芯片上出现 🎲；default 为 null 表示每次随机
+
+    TextareaSpec:
+      allOf:
+        - $ref: '#/components/schemas/ParamSpecBase'
+        - type: object
+          required: [max_length]
+          properties:
+            control: { const: textarea }
+            max_length: { type: integer }
+            placeholder: { type: string }
+
+    ParamSpec:
+      oneOf:
+        - $ref: '#/components/schemas/SelectSpec'
+        - $ref: '#/components/schemas/AspectSelectSpec'
+        - $ref: '#/components/schemas/CompoundSpec'
+        - $ref: '#/components/schemas/StepperSpec'
+        - $ref: '#/components/schemas/SliderSpec'
+        - $ref: '#/components/schemas/ToggleSpec'
+        - $ref: '#/components/schemas/SeedSpec'
+        - $ref: '#/components/schemas/TextareaSpec'
+      discriminator:
+        propertyName: control
+        mapping:
+          select: '#/components/schemas/SelectSpec'
+          aspect_select: '#/components/schemas/AspectSelectSpec'
+          compound: '#/components/schemas/CompoundSpec'
+          stepper: '#/components/schemas/StepperSpec'
+          slider: '#/components/schemas/SliderSpec'
+          toggle: '#/components/schemas/ToggleSpec'
+          seed: '#/components/schemas/SeedSpec'
+          textarea: '#/components/schemas/TextareaSpec'
+
+    Condition:
+      description: |
+        参数联动与隐式分流的声明式表达。前端实现是纯函数
+        `evaluate(cond, formValues, inputs): boolean`；后端 L1 用同一套语义做服务端校验与计价。
+        **两端行为必须一致**，否则前端算的价和后端扣的钱会对不上。
+      oneOf:
+        - type: object
+          required: [op, key, value]
+          properties:
+            op: { type: string, enum: [eq, ne] }
+            key: { type: string }
+            value: { $ref: '#/components/schemas/JsonValue' }
+        - type: object
+          required: [op, key, value]
+          properties:
+            op: { type: string, enum: [gt, lt] }
+            key: { type: string }
+            value: { type: number }
+        - type: object
+          required: [op, key, value]
+          properties:
+            op: { type: string, enum: [in, nin] }
+            key: { type: string }
+            value:
+              type: array
+              items: { $ref: '#/components/schemas/JsonValue' }
+        - type: object
+          required: [op, slot]
+          properties:
+            op: { type: string, const: has_input }
+            slot: { type: string }
+        - type: object
+          required: [op, of]
+          properties:
+            op: { type: string, enum: [and, or] }
+            of:
+              type: array
+              items: { $ref: '#/components/schemas/Condition' }
+        - type: object
+          required: [op, of]
+          properties:
+            op: { type: string, const: not }
+            of: { $ref: '#/components/schemas/Condition' }
+
+    PricingSpec:
+      type: object
+      description: |
+        前端必须能在用户改参数时**本地实时**算出预估积分。算法：
+        `subtotal = base`；按序应用 modifiers（mul/add）；
+        再乘 `multiplier_param` 的数值；最后按 rounding 取整。
+        前端算的只用于展示，**以 POST /api/tasks 返回的 estimated_cost 为准**。
+      required: [currency, base, modifiers, rounding]
+      properties:
+        currency: { type: string, const: credit }
+        base: { type: number }
+        modifiers:
+          type: array
+          items: { $ref: '#/components/schemas/PricingModifier' }
+        multiplier_param:
+          type: string
+          description: 最后乘上该参数的数值，如 count（几张）或 duration（几秒）
+        rounding:
+          type: string
+          enum: [ceil, round, floor]
+
+    PricingModifier:
+      type: object
+      required: [when, op, value]
+      properties:
+        when: { $ref: '#/components/schemas/Condition' }
+        op:
+          type: string
+          enum: [mul, add]
+        value: { type: number }
+        label: { type: string }
+
+    EtaSpec:
+      type: object
+      required: [p50_seconds, p90_seconds]
+      properties:
+        p50_seconds: { type: number }
+        p90_seconds: { type: number }
+        scales_with:
+          type: string
+          description: 指向某数值参数时，eta 按 该参数值/该参数默认值 线性缩放
+
+    LimitSpec:
+      type: object
+      required: [max_concurrent_per_user, prompt_max_length, queue_position_available]
+      properties:
+        max_concurrent_per_user: { type: integer }
+        prompt_max_length: { type: integer }
+        queue_position_available: { type: boolean }
+
+    ####################################################
+    # tasks
+    ####################################################
+    CreateTaskRequest:
+      type: object
+      description: |
+        **没有 mode 字段** —— 隐式分流由后端按 inputs 是否为空判定。
+      required: [model_id, prompt, inputs, params, client_token]
+      properties:
+        model_id: { type: string }
+        prompt: { type: string }
+        inputs:
+          type: object
+          description: key 为 InputSlotSpec.key，值为 upload_id 或已有 asset_id 的数组
+          additionalProperties:
+            type: array
+            items: { type: string }
+        params:
+          type: object
+          description: key 为 ParamSpec.key（compound 已平铺），只包含 visible_when 为真的参数
+          additionalProperties: { $ref: '#/components/schemas/JsonValue' }
+        client_token:
+          type: string
+          description: 前端生成的幂等键，断网重发不会产生两个任务
+          maxLength: 64
+        canvas_id:
+          type: string
+          description: 画布内发起时携带，完成后产物直接落到该画布
+        card_id:
+          type: string
+          description: |
+            **对 capability-schema.ts 的增补字段**（TS 侧的 `CreateTaskRequest` 尚无此项）。
+            单卡重跑时携带：产物原地替换该卡片、旧版本进 `history`，
+            位置 / 大小 / refs 全部不变（前端设计 §5.7 的「锚点锁定」）。
+            落地时需在 TS 契约同步补上，两侧才算对齐。
+
+    CreateTaskResponse:
+      type: object
+      required: [task_id, status, estimated_cost]
+      properties:
+        task_id: { type: string }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        estimated_cost:
+          type: integer
+          description: 服务端权威预估，与前端本地算的不一致时前端静默覆盖显示
+        queue_position:
+          type: [integer, 'null']
+        eta_seconds:
+          type: [number, 'null']
+
+    TaskStatus:
+      type: string
+      enum: [queued, running, succeeded, failed, canceled]
+      description: |
+        **平台自己的状态枚举。** 各上游供应商的状态在 L0 driver 内部归一化到这里，
+        L2 以上只认平台状态（见 tech-design §状态归一化表）。
+
+    Task:
+      type: object
+      required: [id, model_id, modality, status, prompt, params, created_at]
+      properties:
+        id: { type: string }
+        model_id: { type: string }
+        model_name: { type: string }
+        modality: { $ref: '#/components/schemas/Modality' }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        progress:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: 供应商大多不给真实百分比，前端靠 eta 做乐观推进（上限卡 90%）
+        queue_position: { type: [integer, 'null'] }
+        eta_seconds: { type: [number, 'null'] }
+        prompt: { type: string }
+        params:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/JsonValue' }
+        inputs:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        estimated_cost: { type: integer }
+        actual_cost:
+          type: [integer, 'null']
+          description: 仅成功后有值；失败三分类恒为 0
+        assets:
+          type: array
+          items: { $ref: '#/components/schemas/Asset' }
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/TaskError'
+            - type: 'null'
+        canvas_id: { type: [string, 'null'] }
+        card_id: { type: [string, 'null'] }
+        client_token: { type: string }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        started_at: { type: [string, 'null'], format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+
+    TaskPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Task' }
+        next_cursor:
+          type: [string, 'null']
+          description: status=active 时恒为 null（不分页，全量返回用于对账）
+
+    ####################################################
+    # SSE 事件体
+    ####################################################
+    TaskUpdatedEvent:
+      type: object
+      required: [task_id, status]
+      properties:
+        task_id: { type: string }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        progress: { type: [number, 'null'] }
+        queue_position: { type: [integer, 'null'] }
+        eta_seconds: { type: [number, 'null'] }
+
+    TaskSucceededEvent:
+      type: object
+      required: [task_id, assets]
+      properties:
+        task_id: { type: string }
+        assets:
+          type: array
+          items: { $ref: '#/components/schemas/Asset' }
+        actual_cost: { type: integer }
+
+    TaskFailedEvent:
+      type: object
+      required: [task_id, error]
+      properties:
+        task_id: { type: string }
+        error: { $ref: '#/components/schemas/TaskError' }
+
+    CreditUpdatedEvent:
+      type: object
+      required: [balance]
+      properties:
+        balance: { type: integer }
+        held: { type: integer }
+
+    CanvasCardUpdatedEvent:
+      type: object
+      required: [canvas_id, card_id, status]
+      properties:
+        canvas_id: { type: string }
+        card_id: { type: string }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        asset_id: { type: [string, 'null'] }
+
+    ####################################################
+    # assets
+    ####################################################
+    AssetType:
+      type: string
+      enum: [image, video, audio, text]
+
+    Asset:
+      type: object
+      description: |
+        **必须带多档 URL**（前端按画布缩放分级加载，否则同屏 20+ 个原图/video 必炸），
+        **必须带 source**（否则「做同款」和「单卡重跑」同时废掉）。
+        所有 URL 均指向本平台存储，绝不是上游 URL。
+      required: [id, type, original, created_at]
+      properties:
+        id: { type: string }
+        type: { $ref: '#/components/schemas/AssetType' }
+        original:
+          type: string
+          description: 原图/原视频地址
+        thumb_512:
+          type: [string, 'null']
+          description: 512px 缩略图；画布 0.4 ≤ k < 1 时用
+        poster:
+          type: [string, 'null']
+          description: 视频封面；`<video>` 未挂载时显示
+        mime: { type: string }
+        bytes: { type: integer, format: int64 }
+        width: { type: [integer, 'null'] }
+        height: { type: [integer, 'null'] }
+        duration_ms: { type: [integer, 'null'] }
+        task_id: { type: [string, 'null'] }
+        source: { $ref: '#/components/schemas/AssetSource' }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    AssetSource:
+      type: object
+      description: 生成参数快照。血缘的「怎么来的」那一半，与 lineage 的「从谁来的」互补。
+      required: [model_id, prompt, params, input_asset_ids]
+      properties:
+        model_id: { type: string }
+        prompt: { type: string }
+        params:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/JsonValue' }
+        input_asset_ids:
+          type: array
+          items: { type: string }
+        skill_id: { type: [string, 'null'] }
+
+    AssetPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Asset' }
+        next_cursor: { type: [string, 'null'] }
+
+    LineageGraph:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/Asset' }
+        edges:
+          type: array
+          items:
+            type: object
+            required: [from, to, relation]
+            properties:
+              from: { type: string, description: 父资产 id }
+              to: { type: string, description: 子资产 id }
+              relation:
+                type: string
+                enum: [input, rerun_of, composed_from]
+
+    Upload:
+      type: object
+      required: [upload_id, preview_url, mime, bytes]
+      properties:
+        upload_id: { type: string }
+        preview_url: { type: string }
+        mime: { type: string }
+        bytes: { type: integer, format: int64 }
+        width: { type: [integer, 'null'] }
+        height: { type: [integer, 'null'] }
+        expires_at: { $ref: '#/components/schemas/Timestamp' }
+
+    ####################################################
+    # skills
+    ####################################################
+    Skill:
+      type: object
+      required: [id, name, default_params]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        system_prompt_ref:
+          type: string
+          description: 提示词标识，原文不下发前端
+        default_model_id: { type: [string, 'null'] }
+        default_params:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/JsonValue' }
+        order: { type: integer }
+
+    AdminSkill:
+      allOf:
+        - $ref: '#/components/schemas/Skill'
+        - type: object
+          required: [system_prompt, enabled]
+          properties:
+            system_prompt: { type: string }
+            enabled: { type: boolean }
+
+    AdminSkillUpsert:
+      type: object
+      required: [name, system_prompt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        system_prompt: { type: string }
+        default_model_id: { type: [string, 'null'] }
+        default_params:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/JsonValue' }
+        enabled: { type: boolean, default: true }
+        order: { type: integer, default: 0 }
+
+    ####################################################
+    # canvas
+    ####################################################
+    Project:
+      type: object
+      required: [id, name, revision, created_at, updated_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        revision: { type: integer, format: int64 }
+        card_count: { type: integer }
+        cover_asset_id: { type: [string, 'null'] }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+
+    ProjectPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Project' }
+        next_cursor: { type: [string, 'null'] }
+
+    CanvasCard:
+      type: object
+      required: [id, kind, x, y, w, h, z, refs, auto_placed, created_at]
+      properties:
+        id: { type: string }
+        kind:
+          type: string
+          enum: [text, image, video]
+        x: { type: number }
+        y: { type: number }
+        w: { type: number }
+        h: { type: number }
+        z: { type: number }
+        task_id: { type: [string, 'null'] }
+        asset_id: { type: [string, 'null'] }
+        text: { type: [string, 'null'] }
+        model_id: { type: [string, 'null'] }
+        prompt: { type: [string, 'null'] }
+        params:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/JsonValue' }
+        refs:
+          type: array
+          description: 血缘：这张卡由哪些卡片作为输入生成。**不是可视连线。**
+          items: { type: string }
+        history:
+          type: array
+          description: 重跑的历史版本，卡片左下角版本切换器 ‹2/3› 用
+          items:
+            type: object
+            required: [asset_id, prompt, at]
+            properties:
+              asset_id: { type: string }
+              prompt: { type: string }
+              at: { $ref: '#/components/schemas/Timestamp' }
+        auto_placed:
+          type: boolean
+          description: 用户手动移动过就置 false，该区域不再参与自动重排
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    CanvasMessage:
+      type: object
+      required: [id, role, content, created_at]
+      properties:
+        id: { type: string }
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content: { type: string }
+        skill_id: { type: [string, 'null'] }
+        ref_card_ids:
+          type: array
+          items: { type: string }
+        task_ids:
+          type: array
+          items: { type: string }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    CanvasSnapshot:
+      type: object
+      required: [revision, cards, conversation]
+      properties:
+        revision: { type: integer, format: int64 }
+        cards:
+          type: array
+          items: { $ref: '#/components/schemas/CanvasCard' }
+        conversation:
+          type: array
+          items: { $ref: '#/components/schemas/CanvasMessage' }
+        viewport:
+          type: object
+          description: 上次退出时的视口，k ∈ [0.1, 4]
+          properties:
+            x: { type: number }
+            y: { type: number }
+            k: { type: number }
+
+    CanvasOp:
+      oneOf:
+        - type: object
+          required: [type, card]
+          properties:
+            type: { type: string, const: card.create }
+            card: { $ref: '#/components/schemas/CanvasCard' }
+        - type: object
+          required: [type, id]
+          properties:
+            type: { type: string, const: card.move }
+            id: { type: string }
+            x: { type: number }
+            y: { type: number }
+            z: { type: number }
+        - type: object
+          required: [type, id, patch]
+          properties:
+            type: { type: string, const: card.update }
+            id: { type: string }
+            patch:
+              type: object
+              description: CanvasCard 的部分字段
+              additionalProperties: { $ref: '#/components/schemas/JsonValue' }
+        - type: object
+          required: [type, id]
+          properties:
+            type: { type: string, const: card.delete }
+            id: { type: string }
+        - type: object
+          required: [type, viewport]
+          properties:
+            type: { type: string, const: viewport.set }
+            viewport:
+              type: object
+              properties:
+                x: { type: number }
+                y: { type: number }
+                k: { type: number }
+      discriminator:
+        propertyName: type
+
+    CanvasPatchRequest:
+      type: object
+      required: [base_revision, ops]
+      properties:
+        base_revision: { type: integer, format: int64 }
+        ops:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/CanvasOp' }
+
+    CanvasChatRequest:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+        skill_id: { type: [string, 'null'] }
+        ref_card_ids:
+          type: array
+          items: { type: string }
+        client_token: { type: string }
+
+    CanvasChatResponse:
+      type: object
+      required: [message_id, revision]
+      properties:
+        message_id: { type: string }
+        revision:
+          type: integer
+          format: int64
+          description: 若 agent 直接建了卡片，画布 revision 会推进
+        task_ids:
+          type: array
+          items: { type: string }
+
+    ####################################################
+    # admin —— 配置模型
+    ####################################################
+    ProtocolFamily:
+      type: string
+      description: |
+        协议族。chat / images 统一走 OpenAI 协议；video 内部再按 video_protocol 分驱动；
+        mock 是本地开发用的假驱动，走**完全相同**的 interface / 状态机 / 转存 / 记账路径，
+        只替换最底层 HTTP 调用。
+      enum: [chat, images, video, mock]
+
+    VideoProtocol:
+      type: string
+      description: |
+        视频族的具体协议。三家供应商在提交端点、轮询寻址、状态枚举、产物取法四个维度全不同，
+        因此不能用一套 URL 模板硬套（见 tech-design §L0）。
+      enum: [ark, openai_video, google_lro, mock]
+
+    Provider:
+      type: object
+      required: [id, name, base_url, credential_ref, enabled]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        base_url: { type: string, examples: ['https://api.example.com'] }
+        credential_ref:
+          type: string
+          description: |
+            **环境变量名**，不是密钥本身。例 `AIGC_PROVIDER_ARK_KEY`。
+            密钥只从 env 读，不入库、不进代码、不进样例。
+          examples: ['AIGC_PROVIDER_ARK_KEY']
+        auth_style:
+          type: string
+          enum: [bearer, header, query]
+          default: bearer
+          description: Ark 与 OpenAI 一致都是 Bearer，可复用同一套凭证结构
+        auth_header_name: { type: string, examples: ['Authorization'] }
+        enabled: { type: boolean }
+        timeout_ms: { type: integer, default: 30000 }
+        max_concurrency:
+          type: integer
+          description: 该供应商的全局并发闸门，故障隔离的一部分
+        credential_present:
+          type: boolean
+          readOnly: true
+          description: 对应 env 变量当前是否已配置。只回布尔，**永不回显密钥**
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    ProviderUpsert:
+      type: object
+      required: [name, base_url, credential_ref]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        base_url: { type: string }
+        credential_ref: { type: string }
+        auth_style:
+          type: string
+          enum: [bearer, header, query]
+        auth_header_name: { type: string }
+        enabled: { type: boolean, default: true }
+        timeout_ms: { type: integer }
+        max_concurrency: { type: integer }
+
+    ModelConfig:
+      type: object
+      description: |
+        一条记录 = 一个可用模型。**改配置不重启、不发版。**
+        `capability` 直接作为 `GET /api/models` 的元素下发前端。
+      required: [id, provider_id, upstream_model, protocol_family, capability]
+      properties:
+        id: { type: string, examples: ['seedream-5-pro'] }
+        provider_id: { type: string }
+        upstream_model:
+          type: string
+          description: 上游模型名，例 doubao-seedance-2-0-260128
+        protocol_family: { $ref: '#/components/schemas/ProtocolFamily' }
+        video_protocol:
+          oneOf:
+            - $ref: '#/components/schemas/VideoProtocol'
+            - type: 'null'
+          description: 仅 protocol_family=video 时必填
+        capability: { $ref: '#/components/schemas/ModelCapabilitySchema' }
+        request_mapping: { $ref: '#/components/schemas/RequestMapping' }
+        poll_interval_seconds:
+          type: [integer, 'null']
+          description: 缺省取 driver 默认（ark 12s / openai_video 15s 指数退避）
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+
+    ModelConfigUpsert:
+      type: object
+      required: [id, provider_id, upstream_model, protocol_family, capability]
+      properties:
+        id: { type: string }
+        provider_id: { type: string }
+        upstream_model: { type: string }
+        protocol_family: { $ref: '#/components/schemas/ProtocolFamily' }
+        video_protocol:
+          oneOf:
+            - $ref: '#/components/schemas/VideoProtocol'
+            - type: 'null'
+        capability: { $ref: '#/components/schemas/ModelCapabilitySchema' }
+        request_mapping: { $ref: '#/components/schemas/RequestMapping' }
+        poll_interval_seconds: { type: [integer, 'null'] }
+
+    RequestMapping:
+      type: object
+      description: |
+        **「接一个走已知协议的新模型 = 零代码」这条判定线的承载者。**
+        把平台参数声明式地翻译成上游请求体，driver 只负责协议骨架（端点、鉴权、
+        轮询寻址、产物取法），字段差异全部落在这里。没有它，每个新模型都要改 driver。
+      properties:
+        body_template:
+          type: object
+          description: 上游请求体的静态骨架，规则渲染在它之上
+          additionalProperties: true
+        rules:
+          type: array
+          items: { $ref: '#/components/schemas/MappingRule' }
+
+    MappingRule:
+      type: object
+      required: [to]
+      properties:
+        from:
+          type: string
+          description: |
+            取值源。`prompt` / `params.<key>` / `inputs.<slot>` / `model.upstream_model`。
+            与 const 二选一。
+          examples: ['params.resolution']
+        const:
+          $ref: '#/components/schemas/JsonValue'
+        to:
+          type: string
+          description: |
+            上游请求体中的目标路径，点号分隔；`[]` 结尾表示追加进数组
+            （Ark 的 content 数组顺序影响生成语义，规则顺序即数组顺序）。
+          examples: ['parameters.resolution', 'content[]']
+        value_map:
+          type: object
+          description: 平台取值 → 上游取值的映射，例 {"768p":"720p"}
+          additionalProperties: { $ref: '#/components/schemas/JsonValue' }
+        wrap:
+          type: string
+          enum: [raw, text_part, image_url_part, video_url_part]
+          description: 追加进多模态数组时的包裹形态
+        cast:
+          type: string
+          enum: [string, int, float, bool, seconds_suffix]
+        when: { $ref: '#/components/schemas/Condition' }
+        omit_when_empty: { type: boolean, default: true }
+
+    ProbeResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        dry_run: { type: boolean }
+        rendered_request:
+          type: object
+          description: request_mapping 渲染出的上游请求体（**已脱敏，不含凭证**）
+          additionalProperties: true
+        upstream_status: { type: [integer, 'null'] }
+        error: { $ref: '#/components/schemas/TaskError' }
+        latency_ms: { type: [integer, 'null'] }
+
+    ####################################################
+    # admin —— 用户 / 积分 / 监控 / 存储
+    ####################################################
+    AdminUser:
+      allOf:
+        - $ref: '#/components/schemas/Me'
+        - type: object
+          required: [status]
+          properties:
+            status: { $ref: '#/components/schemas/UserStatus' }
+            task_count: { type: integer }
+            last_active_at: { type: [string, 'null'], format: date-time }
+
+    AdminUserPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminUser' }
+        next_cursor: { type: [string, 'null'] }
+
+    CreditLedgerEntry:
+      type: object
+      description: |
+        **append-only 流水是余额的唯一真相**，users.credits 只是它的物化缓存。
+        hold=冻结、charge=成功实扣、refund=失败退回、topup=管理员充值、adjust=人工修正。
+      required: [id, type, amount, balance_after, created_at]
+      properties:
+        id: { type: string }
+        user_id: { type: string }
+        task_id: { type: [string, 'null'] }
+        type:
+          type: string
+          enum: [hold, charge, refund, topup, adjust]
+        amount:
+          type: integer
+          description: 有符号，正=入账，负=出账
+        balance_after: { type: integer }
+        reason: { type: string }
+        operator_id:
+          type: [string, 'null']
+          description: 管理员操作时记录，用户自发行为为 null
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    CreditLedgerPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CreditLedgerEntry' }
+        next_cursor: { type: [string, 'null'] }
+
+    AdminTask:
+      allOf:
+        - $ref: '#/components/schemas/Task'
+        - type: object
+          properties:
+            user_id: { type: string }
+            username: { type: string }
+            provider_id: { type: string }
+            attempt: { type: integer }
+            upstream_ref:
+              type: [string, 'null']
+              description: 上游任务 id 或 google_lro 的 operation name
+            upstream_status_raw:
+              type: [string, 'null']
+              description: 归一化前的上游原始状态，排障用
+
+    AdminTaskPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminTask' }
+        next_cursor: { type: [string, 'null'] }
+
+    TaskStats:
+      type: object
+      required: [window, queued, running, by_status, by_error_code]
+      properties:
+        window: { type: string }
+        queued: { type: integer }
+        running: { type: integer }
+        oldest_queued_age_seconds: { type: [integer, 'null'] }
+        by_status:
+          type: object
+          additionalProperties: { type: integer }
+        by_error_code:
+          type: object
+          description: 失败分布，key 为 TaskErrorCode
+          additionalProperties: { type: integer }
+        by_model:
+          type: array
+          items:
+            type: object
+            properties:
+              model_id: { type: string }
+              total: { type: integer }
+              failed: { type: integer }
+              p50_duration_seconds: { type: [number, 'null'] }
+
+    CircuitBreakerState:
+      type: object
+      required: [provider_id, state]
+      properties:
+        provider_id: { type: string }
+        state:
+          type: string
+          enum: [closed, open, half_open]
+        failure_count: { type: integer }
+        opened_at: { type: [string, 'null'], format: date-time }
+        next_probe_at: { type: [string, 'null'], format: date-time }
+
+    StorageUsage:
+      type: object
+      required: [total_bytes, asset_count]
+      properties:
+        total_bytes: { type: integer, format: int64 }
+        asset_count: { type: integer }
+        upload_pending_bytes: { type: integer, format: int64 }
+        soft_deleted_bytes: { type: integer, format: int64 }
+        top_users:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id: { type: string }
+              username: { type: string }
+              used_bytes: { type: integer, format: int64 }
+              quota_bytes: { type: integer, format: int64 }
+
+    CleanupResult:
+      type: object
+      required: [dry_run, candidate_count, reclaimed_bytes]
+      properties:
+        dry_run: { type: boolean }
+        candidate_count: { type: integer }
+        reclaimed_bytes: { type: integer, format: int64 }
+        samples:
+          type: array
+          maxItems: 20
+          items: { type: string }

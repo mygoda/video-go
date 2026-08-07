@@ -1,0 +1,19 @@
+# build output
+/bin/
+/aigcd
+
+# local runtime state
+/.env
+/data/
+/storage/
+*.log
+
+# go tooling
+*.test
+*.out
+/vendor/
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/
