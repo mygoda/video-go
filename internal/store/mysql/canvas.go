@@ -211,10 +211,14 @@ func scanCard(s rowScanner) (domain.Card, error) {
 	if err := scanJSON(historyRaw, &c.History); err != nil {
 		return domain.Card{}, err
 	}
-	// Refs 是血缘（「多卡引用为下次输入」靠它），前端按数组渲染。
-	// nil 与 [] 在 JSON 里是 null 与 []，后者才是"没有引用"的正确表达。
+	// Refs 是血缘（「多卡引用为下次输入」靠它），History 是版本切换器的数据源，
+	// 前端都按数组渲染并直接读 .length。
+	// nil 与 [] 在 JSON 里是 null 与 []，后者才是"没有引用/没有历史"的正确表达。
 	if c.Refs == nil {
 		c.Refs = []string{}
+	}
+	if c.History == nil {
+		c.History = []domain.CardVersion{}
 	}
 	c.CreatedAt = c.CreatedAt.UTC()
 	return c, nil

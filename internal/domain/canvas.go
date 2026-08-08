@@ -56,9 +56,11 @@ type Card struct {
 	ModelID *string `json:"model_id"`
 	Prompt  *string `json:"prompt"`
 
-	Params  map[string]any `json:"params,omitempty"`
-	Refs    []string       `json:"refs"`
-	History []CardVersion  `json:"history,omitempty"`
+	Params map[string]any `json:"params,omitempty"`
+	// Refs / History 恒定序列化为数组，绝不缺失也绝不为 null：
+	// 前端直接读 .length，少一个字段就是一次白屏。
+	Refs    []string      `json:"refs"`
+	History []CardVersion `json:"history"`
 
 	AutoPlaced bool      `json:"auto_placed"`
 	CreatedAt  time.Time `json:"created_at"`
