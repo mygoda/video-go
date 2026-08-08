@@ -1,0 +1,44 @@
+import { useEffect, useRef, type ReactNode } from 'react';
+
+interface PopoverProps {
+  open: boolean;
+  onClose(): void;
+  trigger: ReactNode;
+  alignRight?: boolean;
+  children: ReactNode;
+}
+
+/**
+ * 芯片弹层。故意不做 portal + floating 计算：芯片栏在 composer 内部，
+ * 绝对定位到锚点下方就够了，少一层依赖也少一处 z-index 打架。
+ */
+export function Popover({ open, onClose, trigger, alignRight, children }: PopoverProps) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, onClose]);
+
+  return (
+    <div className="popover-anchor" ref={ref}>
+      {trigger}
+      {open && (
+        <div className={`popover popover-float${alignRight ? ' align-right' : ''}`} role="dialog">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
