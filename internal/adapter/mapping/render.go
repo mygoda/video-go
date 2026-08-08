@@ -134,6 +134,17 @@ func sourceValues(rule MappingRule, ctx RenderContext) ([]any, error) {
 			return nil, fmt.Errorf("inputs. 后必须跟输入槽名")
 		}
 		urls := ctx.InputURLs[slot]
+		if rule.Inline {
+			// 空槽在下面统一走 OmitWhenEmpty，不算缺内联。但槽里有素材却没有
+			// 内联形态，说明读字节那一步没做或失败了——此时退回地址会把一个
+			// 上游根本拉不到的 URL 发出去，几十秒后以「下载超时」的形态失败。
+			// 在这里炸掉，错误直接指向真正的原因。
+			inlined := ctx.InputDataURLs[slot]
+			if len(urls) > 0 && len(inlined) != len(urls) {
+				return nil, fmt.Errorf("输入槽 %s 声明了 inline，但只拿到 %d/%d 份内联素材", slot, len(inlined), len(urls))
+			}
+			urls = inlined
+		}
 		out := make([]any, 0, len(urls))
 		for _, u := range urls {
 			out = append(out, u)
@@ -294,23 +305,52 @@ func appendPath(body map[string]any, path []string, values []any) error {
 }
 
 // descend 走到倒数第二段，沿途缺失的中间对象按需创建。
+//
+// 路径段是纯数字时表示下钻进数组的该下标。多模态 chat 的请求体没有它就寻址不到:
+// content 数组挂在 messages 的第 0 个元素上，而不是某个对象的字段，
+// 而 To 的 "[]" 只能出现在末尾。有了下标寻址，"messages.0.content[]" 就是
+// 一条普通规则，不必为每种消息形态再发明一个 Wrap。
+//
+// **数组不按需创建，下标必须已由 body_template 铺好。** 自动补齐会让
+// "messages.1.content" 这种笔误静默造出一条空消息发给上游，
+// 而在渲染期报错能直接指出是模型配置写错了。
 func descend(body map[string]any, path []string) (map[string]any, error) {
-	cur := body
+	var cur any = body
 	for i, seg := range path[:len(path)-1] {
-		next, present := cur[seg]
+		next, err := descendOne(cur, seg, path[:i+1])
+		if err != nil {
+			return nil, err
+		}
+		cur = next
+	}
+	parent, ok := cur.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("路径 %s 上已存在非对象值（%T），无法继续下钻", strings.Join(path[:len(path)-1], "."), cur)
+	}
+	return parent, nil
+}
+
+func descendOne(cur any, seg string, walked []string) (any, error) {
+	switch c := cur.(type) {
+	case map[string]any:
+		next, present := c[seg]
 		if !present || next == nil {
 			child := map[string]any{}
-			cur[seg] = child
-			cur = child
-			continue
+			c[seg] = child
+			return child, nil
 		}
-		child, ok := next.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("路径 %s 上已存在非对象值（%T），无法继续下钻", strings.Join(path[:i+1], "."), next)
+		return next, nil
+	case []any:
+		idx, err := strconv.Atoi(seg)
+		if err != nil {
+			return nil, fmt.Errorf("路径 %s 落在数组上，段 %q 不是下标", strings.Join(walked, "."), seg)
 		}
-		cur = child
+		if idx < 0 || idx >= len(c) {
+			return nil, fmt.Errorf("路径 %s 的下标越界（数组长度 %d），数组元素需由 body_template 预先铺好", strings.Join(walked, "."), len(c))
+		}
+		return c[idx], nil
 	}
-	return cur, nil
+	return nil, fmt.Errorf("路径 %s 上已存在非对象值（%T），无法继续下钻", strings.Join(walked, "."), cur)
 }
 
 // deepCopyMap 保证渲染绝不就地修改配置对象:

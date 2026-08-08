@@ -56,7 +56,7 @@ func (d Driver) Submit(ctx context.Context, in adapter.SubmitInput) (adapter.Sub
 		return adapter.SubmitResult{}, err
 	}
 
-	body, err := httpx.RenderBody(d.Renderer, in)
+	body, err := httpx.RenderBody(ctx, d.Renderer, in)
 	if err != nil {
 		return adapter.SubmitResult{}, err
 	}

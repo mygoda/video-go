@@ -70,8 +70,18 @@ type MappingRule struct {
 	Const any `json:"const,omitempty"`
 
 	// To 是上游请求体中的目标路径，点号分隔；以 "[]" 结尾表示**追加进数组**。
-	// 例: "parameters.resolution"、"content[]"。
+	// 纯数字的路径段表示下钻进数组的该下标（该元素须由 BodyTemplate 铺好）。
+	// 例: "parameters.resolution"、"content[]"、"messages.0.content[]"。
 	To string `json:"to"`
+
+	// Inline 仅对 inputs.<slot> 有意义：为 true 时把素材内联成
+	// data:<mime>;base64,<...> 而不是给出可回源的地址。
+	//
+	// 不是所有上游都能回源拉我们的素材——网关侧不出网、或本平台部署在
+	// 内网地址上时，给地址等于给一个上游永远拉不到的字符串，而失败会以
+	// 「下载超时」的形态出现在几十秒之后。内联把这类失败提前到确定性的一步。
+	// 代价是请求体变大，因此只在确实需要的模型上开。
+	Inline bool `json:"inline,omitempty"`
 
 	// ValueMap 是平台取值 → 上游取值的映射，例 {"768p": "720p"}。
 	// 它让平台对外的参数取值域保持统一，而各家上游各叫各的。
@@ -110,6 +120,10 @@ type RenderContext struct {
 	// InputURLs 的 key 是 InputSlotSpec.Key，值是该槽素材的可访问地址，
 	// 供 inputs.<slot> 取值。
 	InputURLs map[string][]string
+	// InputDataURLs 与 InputURLs 同构，值是 data:<mime>;base64,<...> 形态，
+	// 供带 Inline 的 inputs.<slot> 取值。只有被 Inline 规则引用到的槽会被填充——
+	// 把每份素材都读成字节太贵，而绝大多数上游用地址就够了。
+	InputDataURLs map[string][]string
 }
 
 // Renderer 把 RequestMapping 渲染成上游请求体。

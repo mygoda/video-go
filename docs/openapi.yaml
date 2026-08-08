@@ -2387,7 +2387,9 @@ components:
           description: |
             上游请求体中的目标路径，点号分隔；`[]` 结尾表示追加进数组
             （Ark 的 content 数组顺序影响生成语义，规则顺序即数组顺序）。
-          examples: ['parameters.resolution', 'content[]']
+            纯数字的路径段表示下钻进数组的该下标，该元素须由 body_template
+            预先铺好——多模态 chat 的 content 数组挂在 messages 的第 0 个元素上。
+          examples: ['parameters.resolution', 'content[]', 'messages.0.content[]']
         value_map:
           type: object
           description: 平台取值 → 上游取值的映射，例 {"768p":"720p"}
@@ -2401,6 +2403,14 @@ components:
           enum: [string, int, float, bool, seconds_suffix]
         when: { $ref: '#/components/schemas/Condition' }
         omit_when_empty: { type: boolean, default: true }
+        inline:
+          type: boolean
+          default: false
+          description: |
+            仅对 `inputs.<slot>` 有意义：为 true 时把素材内联成
+            `data:<mime>;base64,<...>` 而不是给出可回源的地址。
+            用于拉不到本平台素材地址的上游（网关不出网、或本平台部署在
+            上游不可达的地址上）。代价是请求体变大，单份素材有大小上限。
 
     ProbeResult:
       type: object

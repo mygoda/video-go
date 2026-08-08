@@ -50,7 +50,7 @@ func (d Driver) Submit(ctx context.Context, in adapter.SubmitInput) (adapter.Sub
 			"模型 %s 没有配置 upstream_model，本协议的模型名在 URL 路径里，必填", in.Model.ID)
 	}
 
-	body, err := httpx.RenderBody(d.Renderer, in)
+	body, err := httpx.RenderBody(ctx, d.Renderer, in)
 	if err != nil {
 		return adapter.SubmitResult{}, err
 	}

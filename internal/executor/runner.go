@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/aigc-pool/aigc-pool/internal/adapter"
@@ -157,6 +158,7 @@ func (s *Service) Run(ctx context.Context, lease Lease) error {
 		Prompt:         task.Prompt,
 		Params:         task.Params,
 		Inputs:         inputs,
+		Blobs:          s.blobReader(),
 		Credential:     s.deps.Credential(provider.CredentialRef),
 		IdempotencyKey: task.ID,
 	}
@@ -636,6 +638,29 @@ func (s *Service) resolveInputs(ctx context.Context, task domain.Task) ([]adapte
 		}
 	}
 	return refs, ids, nil
+}
+
+// blobReader 把 asset.Store 适配成 driver 侧的 adapter.BlobReader，
+// 供 request_mapping 里带 inline 的规则把素材内联进上游请求体。
+//
+// 没配 Store 时返回 nil 而不是一个读不出东西的空壳：httpx 那边对 nil
+// 会报「没有注入 BlobReader」，比一个每次都报 not found 的实现好定位。
+func (s *Service) blobReader() adapter.BlobReader {
+	if s.deps.Blobs == nil {
+		return nil
+	}
+	return blobReader{store: s.deps.Blobs}
+}
+
+type blobReader struct{ store asset.Store }
+
+func (b blobReader) ReadBlob(ctx context.Context, storageKey string) ([]byte, error) {
+	rc, _, err := b.store.Get(ctx, storageKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
 }
 
 // resolveOne 把一个 id 解析成资产：先当 asset 查，查不到再当 upload 提升。

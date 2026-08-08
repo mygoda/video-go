@@ -71,6 +71,9 @@ type Deps struct {
 	Assets store.AssetRepo
 	// Uploads 用于识别输入槽里的 upload_id。
 	Uploads store.UploadRepo
+	// Blobs 供 request_mapping 里带 inline 的规则读素材原始字节。为 nil 时
+	// 只有那类模型会失败，走地址的模型不受影响。
+	Blobs asset.Store
 
 	// ── 队列（实现在 store/mysql，用数据库行做租约）────────────────
 	Queue Queue

@@ -475,3 +475,120 @@ func TestDecodeMapping(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderVisionChatShapedBody(t *testing.T) {
+	// 端到端形态：OpenAI 兼容的**多模态输入** chat 请求体。这份 mapping 与
+	// migrations/000004 播种的 gpugeek 视觉模型逐字一致。
+	//
+	// 它同时钉住两件事：messages.0.content[] 这种下标寻址能走通，
+	// 以及 inline 取的是 data URL 而不是地址——上游拉不到本平台的地址，
+	// 一旦这里悄悄退回 URL，失败会推迟到几十秒后的一次下载超时。
+	raw := `{
+	  "body_template": { "messages": [ { "role": "user", "content": [] } ] },
+	  "rules": [
+	    {"from": "model.upstream_model", "to": "model"},
+	    {"from": "inputs.image", "to": "messages.0.content[]", "wrap": "image_url_part", "inline": true},
+	    {"from": "prompt", "to": "messages.0.content[]", "wrap": "text_part"},
+	    {"from": "params.temperature", "to": "temperature", "cast": "float"}
+	  ]
+	}`
+	m, err := DecodeMapping(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := baseCtx()
+	ctx.UpstreamModel = "Vendor3/qwen3-vl-plus"
+	ctx.Params["temperature"] = 0.7
+	ctx.InputURLs["image"] = []string{"http://127.0.0.1:8081/api/assets/a1/content?variant=original"}
+	ctx.InputDataURLs = map[string][]string{"image": {"data:image/png;base64,QUJD"}}
+
+	got, err := NewRenderer(nil).Render(m, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"model": "Vendor3/qwen3-vl-plus",
+		"messages": []any{map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,QUJD"}},
+				map[string]any{"type": "text", "text": "一只在雨里的猫"},
+			},
+		}},
+		"temperature": 0.7,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got  %s\nwant %s", mustJSON(t, got), mustJSON(t, want))
+	}
+}
+
+// 图槽为空时整条 inputs 规则被跳过，content 里只剩文本——
+// 这就是 InputSlotSpec 说的隐式分流：传图走看图说话，不传退化成普通对话。
+func TestRenderVisionWithoutImage(t *testing.T) {
+	m, err := DecodeMapping(`{
+	  "body_template": { "messages": [ { "role": "user", "content": [] } ] },
+	  "rules": [
+	    {"from": "inputs.image", "to": "messages.0.content[]", "wrap": "image_url_part", "inline": true},
+	    {"from": "prompt", "to": "messages.0.content[]", "wrap": "text_part"}
+	  ]
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewRenderer(nil).Render(m, baseCtx())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"messages": []any{map[string]any{
+			"role":    "user",
+			"content": []any{map[string]any{"type": "text", "text": "一只在雨里的猫"}},
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got  %s\nwant %s", mustJSON(t, got), mustJSON(t, want))
+	}
+}
+
+func TestRenderIndexedPathErrors(t *testing.T) {
+	withMessages := map[string]any{"messages": []any{map[string]any{"role": "user", "content": []any{}}}}
+
+	cases := []struct {
+		name string
+		m    RequestMapping
+	}{
+		{
+			// 下标越界不自动补齐：补齐会让 "messages.1" 这种笔误静默造出
+			// 一条空消息发给上游，而那是一次真花钱的调用。
+			"下标越界",
+			RequestMapping{
+				BodyTemplate: withMessages,
+				Rules:        []MappingRule{{From: "prompt", To: "messages.9.content[]"}},
+			},
+		},
+		{
+			"数组上用非下标段",
+			RequestMapping{
+				BodyTemplate: withMessages,
+				Rules:        []MappingRule{{From: "prompt", To: "messages.role.content[]"}},
+			},
+		},
+		{
+			// 槽里有素材却没拿到内联形态，说明读字节那步没做或失败了。
+			"声明 inline 但缺内联素材",
+			RequestMapping{
+				Rules: []MappingRule{{From: "inputs.reference_images", To: "content[]", Wrap: WrapImageURLPart, Inline: true}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewRenderer(nil).Render(tc.m, baseCtx()); err == nil {
+				t.Fatal("期望报错，实际通过")
+			}
+		})
+	}
+}

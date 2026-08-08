@@ -64,6 +64,16 @@ type InputRef struct {
 	Bytes      int64
 }
 
+// BlobReader 按存储键读出输入素材的原始字节。
+//
+// 存在的理由只有一个：有些上游拉不到本平台的素材地址——网关侧不出网，
+// 或本平台部署在上游根本不可达的地址上。这类上游只能把字节内联进请求体，
+// 而 mapping 的 inline 规则需要有人真的去把字节读出来。读字节的实现由 L2
+// 注入，L0 只声明"我需要能读"，不认识任何存储后端。
+type BlobReader interface {
+	ReadBlob(ctx context.Context, storageKey string) ([]byte, error)
+}
+
 // SubmitInput 是喂给 driver 的一次调用的全部输入。
 //
 // 它是**平台侧**的形态：Params 的 key 是 ParamSpec.Key，还没翻译成上游字段名。
@@ -77,6 +87,8 @@ type SubmitInput struct {
 	Prompt        string
 	Params        map[string]any
 	Inputs        []InputRef
+	// Blobs 供带 inline 的 mapping 规则读素材字节，为 nil 时这类规则渲染失败。
+	Blobs BlobReader
 	// Credential 是从 env 读出的密钥明文，仅在进程内传递。
 	// 它不入库、不进日志、不进 ProbeResult.RenderedRequest。
 	Credential string

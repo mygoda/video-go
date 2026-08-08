@@ -107,6 +107,7 @@ func build(cfg *config.Config) (*app, error) {
 		Providers:           providers,
 		Assets:              assets,
 		Uploads:             uploads,
+		Blobs:               blobs,
 		Queue:               mysqlstore.NewQueue(db),
 		Drivers:             drivers,
 		Transferor:          transferor,
