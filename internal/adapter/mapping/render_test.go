@@ -151,6 +151,15 @@ func TestRenderRules(t *testing.T) {
 			want: map[string]any{"list": []any{"768p"}},
 		},
 		{
+			name: "wrap user_message 拼出 chat 协议的 messages 数组",
+			m: RequestMapping{Rules: []MappingRule{
+				{From: "prompt", To: "messages[]", Wrap: WrapUserMessage},
+			}},
+			want: map[string]any{"messages": []any{
+				map[string]any{"role": "user", "content": "一只在雨里的猫"},
+			}},
+		},
+		{
 			name: "规则顺序即数组顺序：图在前文在后",
 			m: RequestMapping{Rules: []MappingRule{
 				{From: "inputs.reference_images", To: "content[]", Wrap: WrapImageURLPart},
@@ -381,6 +390,43 @@ func TestRenderArkShapedBody(t *testing.T) {
 	content := got["content"].([]any)
 	if len(content) != 1 {
 		t.Fatalf("未传首帧时 content 应只有文本部分，got %s", mustJSON(t, content))
+	}
+}
+
+func TestRenderChatShapedBody(t *testing.T) {
+	// 端到端形态：OpenAI 兼容的 chat 请求体。这份 mapping 与
+	// migrations/000003 播种的 gpugeek 模型逐字一致——它是「接一个走已知协议的
+	// 新模型 = 一条配置，零代码」在真实上游上的那条配置。
+	raw := `{
+	  "rules": [
+	    {"from": "model.upstream_model", "to": "model"},
+	    {"from": "prompt", "to": "messages[]", "wrap": "user_message"},
+	    {"from": "params.temperature", "to": "temperature", "cast": "float"},
+	    {"from": "params.max_tokens", "to": "max_tokens", "cast": "int"}
+	  ]
+	}`
+	m, err := DecodeMapping(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := baseCtx()
+	ctx.UpstreamModel = "Vendor3/qwen-flash"
+	ctx.Params["temperature"] = 0.7
+	ctx.Params["max_tokens"] = float64(2048)
+
+	got, err := NewRenderer(nil).Render(m, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"model":       "Vendor3/qwen-flash",
+		"messages":    []any{map[string]any{"role": "user", "content": "一只在雨里的猫"}},
+		"temperature": 0.7,
+		"max_tokens":  int64(2048),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got  %s\nwant %s", mustJSON(t, got), mustJSON(t, want))
 	}
 }
 

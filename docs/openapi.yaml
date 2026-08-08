@@ -2394,8 +2394,8 @@ components:
           additionalProperties: { $ref: '#/components/schemas/JsonValue' }
         wrap:
           type: string
-          enum: [raw, text_part, image_url_part, video_url_part]
-          description: 追加进多模态数组时的包裹形态
+          enum: [raw, text_part, image_url_part, video_url_part, user_message]
+          description: 追加进多模态数组时的包裹形态；user_message 包出 {"role":"user","content":"..."}，用于 chat 协议的 messages 数组
         cast:
           type: string
           enum: [string, int, float, bool, seconds_suffix]

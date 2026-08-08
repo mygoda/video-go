@@ -240,6 +240,8 @@ func applyWrap(w Wrap, v any) (any, error) {
 		return map[string]any{"type": "image_url", "image_url": map[string]any{"url": stringify(v)}}, nil
 	case WrapVideoURLPart:
 		return map[string]any{"type": "video_url", "video_url": map[string]any{"url": stringify(v)}}, nil
+	case WrapUserMessage:
+		return map[string]any{"role": "user", "content": stringify(v)}, nil
 	}
 	return nil, fmt.Errorf("未知 wrap %q", w)
 }

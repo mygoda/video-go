@@ -32,6 +32,14 @@ const (
 	WrapTextPart     Wrap = "text_part"
 	WrapImageURLPart Wrap = "image_url_part"
 	WrapVideoURLPart Wrap = "video_url_part"
+
+	// WrapUserMessage 包出 {"role":"user","content":"..."}，用于 chat 协议的 messages 数组。
+	//
+	// 没有它，一个合法的 chat 请求体在本包里根本表达不出来：To 的 "[]" 只能出现在
+	// 末尾，descend 也只下钻对象，因此 "messages[0].content" 这种路径无法寻址。
+	// 缺这一个壳子的代价是每接一个 chat 模型都要回 driver 里拼 messages，
+	// 那正是本包要消灭的东西。
+	WrapUserMessage Wrap = "user_message"
 )
 
 // Cast 是写入上游请求体前的类型转换。
