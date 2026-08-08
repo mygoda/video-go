@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { Asset } from '@/api/types';
 import { useAssets, useMe } from '@/api/queries';
+import { formatBytes } from '@/components/admin/format';
 import { useAuthStore } from '@/stores/auth';
 
 const TYPES = [
@@ -12,16 +13,13 @@ const TYPES = [
 
 /** 瀑布流靠固定高度档位拉出参差，跟高保真稿一致；真实高度由 width/height 推算 */
 function heightClass(asset: Asset): string {
-  const ratio = asset.height / Math.max(asset.width, 1);
+  if (!asset.width || !asset.height) return 'h-190';
+  const ratio = asset.height / asset.width;
   if (ratio >= 1.5) return 'h-280';
   if (ratio >= 1.2) return 'h-240';
   if (ratio >= 0.95) return 'h-220';
   if (ratio >= 0.7) return 'h-190';
   return 'h-160';
-}
-
-function formatBytes(bytes: number): string {
-  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
 export function AssetsPage() {
@@ -52,7 +50,16 @@ export function AssetsPage() {
           </button>
         ))}
         <span className="hint" style={{ marginLeft: 'auto' }}>
-          共 <span className="mono">{page?.total ?? 0}</span> 项
+          {/* 响应里没有总数字段，只能报已加载条数；游标见底时它才等于总数 */}
+          {page?.next_cursor ? (
+            <>
+              已加载 <span className="mono">{page.items.length}</span> 项，还有更多
+            </>
+          ) : (
+            <>
+              共 <span className="mono">{page?.items.length ?? 0}</span> 项
+            </>
+          )}
           {me && (
             <>
               {' '}
@@ -91,7 +98,7 @@ export function AssetsPage() {
             <div className="asset-meta">
               {asset.type === 'video' ? `▶ ${asset.duration_seconds ?? 0}s` : asset.source.prompt}
               <br />
-              <span className="mono">{asset.source.model_name}</span>
+              <span className="mono">{asset.source.model_name ?? asset.source.model_id}</span>
             </div>
           </Link>
         ))}

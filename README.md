@@ -2,9 +2,9 @@
 
 多模型 AIGC 创作平台。Go 后端 + MySQL 8.0，前后端分离，本地开发（本阶段不部署）。
 
-**当前状态：后端实现阶段（DEM-64）。** 分层骨架已填成可运行的服务：
-认证、模型配置热读、任务状态机、worker 池与轮询、SSE、产物转存与血缘、积分记账、
-管理接口、画布持久化。前端在 DEM-65。
+**当前状态：前后端已联调。** 后端分层骨架已填成可运行的服务：认证、模型配置热读、
+任务状态机、worker 池与轮询、SSE、产物转存与血缘、积分记账、管理接口、画布持久化。
+前端（`frontend/`）默认直连真后端，内置的进程内 mock 后端退为显式 opt-in 的离线开发模式。
 
 ## 文档
 
@@ -78,6 +78,48 @@ make run          # 起 HTTP 服务与 worker 池
 
 **这两个默认口令仅供本机开发。** 任何对外可达的部署都必须先设好这两个环境变量再 seed。
 重复跑 `make seed` 不会覆盖已存在账号的口令。
+
+## 前端
+
+前端是独立的 Vite + React 应用，源码在 `frontend/`，详见 [`frontend/README.md`](frontend/README.md)。
+
+```bash
+cd frontend
+npm install       # 用 npm，仓库里是 package-lock.json
+npm run dev       # http://localhost:5173
+```
+
+**默认直连真后端**，所以先按上面「从零跑起来」把后端起起来。前端请求同源 `/api`，
+由 dev server 代理到后端，避开 CORS 与 SSE 缓冲。
+
+### 端口
+
+| 进程 | 端口 | 怎么改 |
+|---|---|---|
+| 后端 | `:8080`（`AIGC_HTTP_ADDR` 缺省值） | `AIGC_HTTP_ADDR=:18080 make run` |
+| 前端 dev server | `5173` | `npm run dev -- --port 15173` |
+| 前端代理指向的后端 | `http://localhost:18080` | `frontend/.env.local` 里写 `VITE_API_PROXY_TARGET=` |
+
+代理默认指向 **18080** 而后端默认监听 **8080**，两边对不上就会整页 502。二选一：
+起后端时带上 `AIGC_HTTP_ADDR=:18080`，或者在 `frontend/.env.local` 里把
+`VITE_API_PROXY_TARGET` 指回 `http://localhost:8080`。
+
+### 离线开发模式（VITE_USE_MOCK）
+
+`frontend/src/mock/` 有一个进程内的假后端，形状与 `docs/openapi.yaml` 一致，
+数据落在 `localStorage`。它**只在显式打开时生效**：
+
+| `VITE_USE_MOCK` | 行为 |
+|---|---|
+| 未设置 / 任何其他值（默认） | 请求打到真后端 |
+| `true` | 请求在 `src/api/client.ts` 里被拦下，路由到进程内 mock，不发任何网络请求 |
+
+```bash
+cp .env.example .env.local    # 里面 VITE_USE_MOCK 是注释掉的，取消注释才开
+```
+
+后端没起、或者只想调界面时才需要它。注意 **`.env.local` 优先级高于代码缺省值**——
+排查「为什么数据看着像假的」时先看这个文件在不在。
 
 ## 无凭证也能跑
 

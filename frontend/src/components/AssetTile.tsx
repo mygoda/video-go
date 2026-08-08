@@ -10,7 +10,9 @@ interface AssetTileProps {
   linkToDetail?: boolean;
 }
 
-function ratioLabel(asset: Asset): string {
+/** 尺寸未知（text 产物、或后端没回宽高）时返回 null，让角标整个不出现，别渲染成 NaN:NaN */
+function ratioLabel(asset: Asset): string | null {
+  if (!asset.width || !asset.height) return null;
   const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
   const g = gcd(asset.width, asset.height) || 1;
   return `${asset.width / g}:${asset.height / g}`;
@@ -27,6 +29,8 @@ export function AssetTile({ asset, heightClass, showDelete = true, linkToDetail 
       <img src={asset.thumb_512} alt={asset.source.prompt} loading="lazy" />
     );
 
+  const badge = asset.type === 'video' ? `${asset.duration_seconds ?? 0}s` : asset.type === 'text' ? '文本' : ratioLabel(asset);
+
   return (
     <div className={`task-card${heightClass ? ` ${heightClass}` : ''}`}>
       {linkToDetail ? (
@@ -42,7 +46,7 @@ export function AssetTile({ asset, heightClass, showDelete = true, linkToDetail 
         media
       )}
 
-      <span className="type-badge">{asset.type === 'video' ? `${asset.duration_seconds ?? 0}s` : ratioLabel(asset)}</span>
+      {badge && <span className="type-badge">{badge}</span>}
 
       <div className="card-actions">
         <button type="button" className="icon-btn" title="下载" aria-label="下载" onClick={() => download(asset)}>

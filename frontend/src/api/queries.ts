@@ -67,13 +67,13 @@ export function useAssets(type: string) {
 
   const loadMore = useMutation({
     mutationFn: async () => {
-      const current = qc.getQueryData<Paged<Asset> & { total: number }>(qk.assets(type));
+      const current = qc.getQueryData<Paged<Asset>>(qk.assets(type));
       if (!current?.next_cursor) return null;
       return api.assets({ type, cursor: current.next_cursor });
     },
     onSuccess: (page) => {
       if (!page) return;
-      qc.setQueryData<Paged<Asset> & { total: number }>(qk.assets(type), (prev) =>
+      qc.setQueryData<Paged<Asset>>(qk.assets(type), (prev) =>
         prev ? { ...page, items: [...prev.items, ...page.items] } : page,
       );
     },

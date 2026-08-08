@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         // 真后端模式下前端仍然请求同源 /api，由 dev server 转发，避开 CORS 与 SSE 缓冲
         '/api': {
-          target: env.VITE_API_PROXY_TARGET ?? 'http://localhost:8080',
+          target: env.VITE_API_PROXY_TARGET ?? 'http://localhost:18080',
           changeOrigin: true,
         },
       },

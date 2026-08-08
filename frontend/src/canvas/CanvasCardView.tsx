@@ -3,6 +3,7 @@ import type { CanvasCard, Task } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { useTasks } from '@/api/queries';
 import { displayProgress } from '@/components/task/failure';
+import { cardTitle } from './cardTitle';
 
 interface CanvasCardViewProps {
   card: CanvasCard;
@@ -67,7 +68,7 @@ export function CanvasCardView({
       style={{ left: card.x, top: card.y, width: card.w, zIndex: card.z }}
       role="group"
       tabIndex={0}
-      aria-label={card.title}
+      aria-label={cardTitle(card)}
       aria-selected={selected}
       onPointerDown={(e) => {
         onSelect(card.id);
@@ -81,7 +82,7 @@ export function CanvasCardView({
       }}
     >
       <div className="cap">
-        {icon} {card.title}
+        {icon} {cardTitle(card)}
       </div>
 
       {card.kind === 'text' ? (
@@ -104,21 +105,21 @@ export function CanvasCardView({
         k >= 0.6 ? (
           <video className="media" src={asset.original} poster={asset.poster} controls playsInline preload="none" />
         ) : (
-          <img className="media" src={asset.poster ?? asset.thumb_512} alt={card.title} style={{ objectFit: 'cover' }} />
+          <img className="media" src={asset.poster ?? asset.thumb_512} alt={cardTitle(card)} style={{ objectFit: 'cover' }} />
         )
       ) : (
         <img
           className="media"
           src={k >= 1 ? asset.original : asset.thumb_512}
-          alt={card.prompt ?? card.title}
+          alt={card.prompt ?? cardTitle(card)}
           style={{ objectFit: 'cover' }}
         />
       )}
 
-      {card.history.length > 1 && (
+      {(card.history?.length ?? 0) > 1 && (
         <span className="version-switch">
           <span className="mono">
-            {card.history.length}/{card.history.length}
+            {card.history?.length}/{card.history?.length}
           </span>
         </span>
       )}

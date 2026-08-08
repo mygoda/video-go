@@ -2,7 +2,8 @@ import type { ApiErrorBody, TaskError } from './types';
 import { getToken, setToken } from './token';
 import { mockHandle } from '@/mock/backend';
 
-export const USE_MOCK = (import.meta.env.VITE_USE_MOCK ?? 'true') !== 'false';
+/** 离线开发模式，必须显式 VITE_USE_MOCK=true 才启用；缺省与任何其他取值都走真后端 */
+export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true';
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
 export class ApiError extends Error {

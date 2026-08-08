@@ -14,7 +14,7 @@ export function TaskCard({ task, onCancel, onRetry, onEditPrompt, onDismiss }: T
   if (task.status === 'succeeded') {
     return (
       <>
-        {task.assets.map((asset) => (
+        {(task.assets ?? []).map((asset) => (
           <AssetTile key={asset.id} asset={asset} />
         ))}
       </>
