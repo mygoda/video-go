@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生成器 · 视频 — AIGC Pool</title>
+<link rel="stylesheet" href="./tokens.css">
+<link rel="stylesheet" href="./mockup.css">
+<style>
+  .generator { padding: var(--space-10) var(--space-6) var(--space-16); }
+  .tabs-row { display: flex; justify-content: center; margin-bottom: var(--space-5); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo"><span class="logo-mark">A</span> AIGC Pool</div>
+  <nav class="nav">
+    <a class="nav-item" href="./generator.html" aria-current="page">生成器</a>
+    <a class="nav-item" href="./canvas.html">画布</a>
+    <a class="nav-item" href="./assets.html">资产</a>
+  </nav>
+  <div class="topbar-right">
+    <span class="credit-badge">⚡ <span class="mono">1,240</span></span>
+    <a class="avatar" href="./me.html">于</a>
+  </div>
+</header>
+
+<main class="generator">
+  <div class="tabs-row">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="false">图片</button>
+      <button class="tab" role="tab" aria-selected="true">视频</button>
+    </div>
+  </div>
+
+  <!-- 与 generator.html 骨架逐像素一致。变的只有：上传位标签、芯片内容、费用、eta。
+       这就是 schema 驱动的价值 —— 同一个 GeneratorPage 组件，差异只在 modality 一个 prop -->
+  <div class="composer">
+    <div class="composer-body">
+      <div class="slot-strip">
+        <button class="upload-slot" aria-label="上传首帧">＋</button>
+        <span class="slot-label">首帧（可选）· 传了走图生视频</span>
+      </div>
+      <textarea class="prompt-input" rows="3">镜头缓慢推进，收银员抬头看向门口，霓虹灯在玻璃上流动</textarea>
+    </div>
+
+    <div class="chipbar">
+      <button class="chip model"><span class="thumb" style="background:linear-gradient(135deg,#3DD68C,#3B9EFF)"></span><span class="v">海螺 02</span><span class="caret">▾</span></button>
+      <button class="chip"><span class="k">分辨率</span><span class="v">1080P</span><span class="caret">▾</span></button>
+      <button class="chip"><span class="k">时长</span><span class="v">5s</span><span class="caret">▾</span></button>
+      <!-- enabled_when 不满足时：禁用 + disabled_hint，不是隐藏 -->
+      <button class="chip" aria-disabled="true" style="opacity:.5;cursor:not-allowed"><span class="k">运镜</span><span class="v">自动</span><span class="caret">▾</span></button>
+      <button class="chip icon-only" aria-label="高级参数">⚙</button>
+
+      <div class="chipbar-right">
+        <span class="cost">⚡<span class="amount mono">120</span> 积分 · 约 3min</span>
+        <button class="btn btn-primary btn-lg">生成</button>
+      </div>
+    </div>
+  </div>
+  <p class="hint" style="max-width:var(--w-composer);margin:8px auto 0;padding-left:16px">
+    「运镜」仅专业模式支持 —— <code>enabled_when</code> 不满足时禁用并给出理由，不静默隐藏
+  </p>
+
+  <div style="max-width:1100px;margin:0 auto">
+    <div class="feed-header">今天</div>
+    <div class="task-grid">
+
+      <!-- 视频任务是分钟级的，进度条超过 p90 后停在 90% 并换文案，不显示骗人的百分比 -->
+      <div class="task-card" style="aspect-ratio:16/9">
+        <div class="skeleton"></div>
+        <div class="task-state" style="background:transparent">
+          <div class="label">生成中</div>
+          <div class="progress"><i style="width:90%"></i></div>
+          <div class="sub">仍在生成中，该模型偶尔较慢</div>
+        </div>
+      </div>
+
+      <div class="task-card" style="aspect-ratio:16/9">
+        <div class="art c"></div>
+        <span class="type-badge">▶ 5s · 1080P</span>
+        <div class="card-actions">
+          <button class="icon-btn" title="下载">↓</button>
+          <button class="icon-btn" title="做同款">⟳</button>
+          <button class="icon-btn" title="送入画布">⊹</button>
+        </div>
+      </div>
+
+      <div class="task-card" style="aspect-ratio:16/9">
+        <div class="task-state">
+          <div class="err-icon err-muted">⚡</div>
+          <div class="label" style="color:var(--muted)">积分不足</div>
+          <div class="sub">还需 <span class="mono">12</span> 积分</div>
+          <a class="btn btn-sm" href="./me.html">去个人中心</a>
+        </div>
+        <span class="charged-tag">未扣费</span>
+      </div>
+
+    </div>
+  </div>
+</main>
+
+<aside class="annot">
+  <b>生成器 · 视频</b>
+  <ul>
+    <li>与图片 tab <b>同一个组件</b>，骨架逐像素一致</li>
+    <li>变的只有 schema 给的：上传位标签、芯片、费用、eta</li>
+    <li>视频卡片按 16:9 排，图片按产物比例</li>
+    <li>超过 <code>eta.p90</code> 仍未完成 → 进度停 90%，文案换成"偶尔较慢"</li>
+  </ul>
+</aside>
+
+</body>
+</html>

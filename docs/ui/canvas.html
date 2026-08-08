@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>画布 · 深夜便利店 — AIGC Pool</title>
+<link rel="stylesheet" href="./tokens.css">
+<link rel="stylesheet" href="./mockup.css">
+<style>
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  .canvas-viewport { flex: 1; }
+  /* 高保真稿里卡片用绝对像素摆位；实现里是世界坐标 × 单层 transform 容器 */
+  .canvas-card.text  { width: 220px; }
+  .canvas-card.shot  { width: 240px; }
+  .proj-name { font-size: var(--text-md); font-weight: var(--weight-medium); }
+  .rev { font-size: var(--text-2xs); color: var(--text-tertiary); }
+</style>
+</head>
+<body>
+
+<!-- CanvasLayout：极窄顶栏、无侧边栏。画布需要视口 -->
+<header class="canvas-topbar">
+  <a class="btn btn-sm btn-ghost" href="./canvas-list.html">← 返回</a>
+  <span class="proj-name">深夜便利店</span>
+  <span class="rev mono">已保存 · rev 42</span>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+    <span class="credit-badge">⚡ <span class="mono">1,240</span></span>
+    <button class="btn btn-sm">一键成片</button>
+    <button class="btn btn-sm icon-only" style="width:28px;padding:0" aria-label="项目设置">⚙</button>
+  </div>
+</header>
+
+<div class="canvas-viewport">
+
+  <!-- 文本卡：剧本。选中卡片的来源，虚线高亮 -->
+  <article class="canvas-card text lineage" style="left:60px;top:96px" role="group" tabindex="0">
+    <div class="cap">📝 剧本</div>
+    <div class="body">
+      深夜 23:47，便利店只剩收银员一人。门铃响起，进来一个浑身湿透的男人……
+    </div>
+  </article>
+
+  <!-- 选中卡片：2px 主色描边 + 外发光。工具条在覆盖层（见 mockup.css 注释） -->
+  <article class="canvas-card shot selected" style="left:340px;top:96px" role="group" tabindex="0">
+    <div class="cap">🖼 分镜 1</div>
+    <div class="art media"></div>
+    <span class="version-switch">‹ <span class="mono">2/3</span> ›</span>
+  </article>
+  <div class="card-toolbar" style="left:474px;top:58px">
+    <button class="icon-btn" title="重跑（片段重拍）">↻</button>
+    <button class="icon-btn" title="引用为下次输入">⊹</button>
+    <button class="icon-btn" title="更多">⋯</button>
+  </div>
+
+  <article class="canvas-card shot dimmed" style="left:620px;top:96px" role="group" tabindex="0">
+    <div class="cap">🖼 分镜 2</div>
+    <div class="art b media"></div>
+  </article>
+
+  <!-- 生成中的卡片：原位骨架屏 + 进度，位置尺寸不变（锚点锁定） -->
+  <article class="canvas-card shot dimmed" style="left:340px;top:328px" role="group" tabindex="0">
+    <div class="cap">🖼 分镜 3</div>
+    <div class="media" style="position:relative">
+      <div class="skeleton"></div>
+      <div class="task-state" style="background:transparent">
+        <div class="progress"><i style="width:45%"></i></div>
+        <div class="sub mono">2:10</div>
+      </div>
+    </div>
+  </article>
+
+  <article class="canvas-card shot dimmed" style="left:620px;top:328px" role="group" tabindex="0">
+    <div class="cap">🎬 视频 1</div>
+    <div class="art c media" style="display:grid;place-items:center">
+      <span style="width:36px;height:36px;border-radius:999px;background:rgba(0,0,0,.5);display:grid;place-items:center">▶</span>
+    </div>
+  </article>
+
+  <article class="canvas-card text dimmed" style="left:60px;top:328px" role="group" tabindex="0">
+    <div class="cap">📝 分镜脚本</div>
+    <div class="body">1. 全景，店内冷光<br>2. 特写，雨水滴落<br>3. 过肩，男人递出纸条</div>
+  </article>
+
+  <!-- 视口控件：左下 pill -->
+  <div class="viewport-controls">
+    <button class="vc-btn" aria-label="缩小">⊖</button>
+    <span class="mono" style="min-width:38px;text-align:center">68%</span>
+    <button class="vc-btn" aria-label="放大">⊕</button>
+    <span style="width:1px;height:16px;background:var(--border-subtle)"></span>
+    <button class="vc-btn" aria-label="适应全部内容">⛶</button>
+  </div>
+
+  <!-- ConversationDock：对话必须和画布同屏，否则"产出落到画布"这件事看不见 -->
+  <aside class="dock">
+    <div class="dock-head">
+      💬 对话
+      <span style="margin-left:auto;display:flex;gap:6px">
+        <button class="vc-btn" aria-label="折叠">▾</button>
+      </span>
+    </div>
+    <div class="dock-body">
+      <div class="msg"><span class="who">你</span><span class="text">按剧本拆 6 个分镜，冷色调，赛博朋克质感</span></div>
+      <div class="msg ai"><span class="who">AI</span><span class="text">已生成 6 张分镜图，落在画布右侧。分镜 3 正在重绘。</span></div>
+      <div class="msg"><span class="who">你</span><span class="text">第 1 张和第 2 张的灯光不统一</span></div>
+      <div class="msg ai"><span class="who">AI</span><span class="text">已引用这 2 张作为参考，将统一为冷白灯管。要现在重跑吗？</span></div>
+    </div>
+    <div class="dock-foot">
+      <!-- 引用 = AutoLink 的本质。画布上选中卡片即入引用区，不需要连线 -->
+      <div class="ref-strip">
+        <span class="ref-chip">🖼 分镜 1 ×</span>
+        <span class="ref-chip">🖼 分镜 2 ×</span>
+      </div>
+      <div class="dock-input">
+        <button class="chip btn-sm" style="height:24px;padding:0 8px"><span class="v">短剧</span><span class="caret">▾</span></button>
+        <input placeholder="描述你想要的……">
+        <button class="btn btn-sm btn-primary" style="width:28px;padding:0">↑</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<aside class="annot" style="top:auto;bottom:16px;right:392px">
+  <b>画布 · 短剧</b>
+  <ul>
+    <li>渲染层 = DOM + 单层 CSS transform（<b>不画连线</b>）</li>
+    <li>选中卡片：主色描边 + 外发光</li>
+    <li>其来源卡片：<b>虚线高亮</b>（血缘 <code>refs</code>）</li>
+    <li>其余卡片：<code>opacity .35</code> 弱化</li>
+    <li>重跑落在同一张卡上，左下出版本切换器 <code>‹ 2/3 ›</code></li>
+    <li>点阵背景随 <code>k</code> 缩放，是唯一的空间参照</li>
+  </ul>
+</aside>
+
+</body>
+</html>

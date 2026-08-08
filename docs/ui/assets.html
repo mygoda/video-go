@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>资产库 — AIGC Pool</title>
+<link rel="stylesheet" href="./tokens.css">
+<link rel="stylesheet" href="./mockup.css">
+<style>
+  .h-160 { height: 160px } .h-220 { height: 220px } .h-280 { height: 280px }
+  .h-190 { height: 190px } .h-240 { height: 240px } .h-200 { height: 200px }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo"><span class="logo-mark">A</span> AIGC Pool</div>
+  <nav class="nav">
+    <a class="nav-item" href="./generator.html">生成器</a>
+    <a class="nav-item" href="./canvas.html">画布</a>
+    <a class="nav-item" href="./assets.html" aria-current="page">资产</a>
+  </nav>
+  <div class="topbar-right">
+    <span class="credit-badge">⚡ <span class="mono">1,240</span></span>
+    <a class="avatar" href="./me.html">于</a>
+  </div>
+</header>
+
+<main class="page">
+  <h1 class="page-title">资产库</h1>
+  <p class="page-sub">全部生成产物 · 游标分页，滚动加载</p>
+
+  <div class="filter-bar">
+    <button class="chip" aria-expanded="false"><span class="v">全部</span></button>
+    <button class="chip"><span class="k">类型</span><span class="v">图片</span><span class="caret">▾</span></button>
+    <button class="chip"><span class="k">模型</span><span class="v">全部</span><span class="caret">▾</span></button>
+    <button class="chip"><span class="k">时间</span><span class="v">近 7 天</span><span class="caret">▾</span></button>
+    <span class="hint" style="margin-left:auto">共 <span class="mono">248</span> 项 · 已用 <span class="mono">3.2 GB</span></span>
+  </div>
+
+  <!-- 瀑布流：产物比例不一，等高网格会大面积裁切。hover 才出元信息，静止时只有画 -->
+  <div class="masonry">
+    <div class="asset"><div class="art h-220"></div>
+      <div class="asset-meta">深夜便利店的收银台，冷白色灯管…<br><span class="mono">Seedream 5.0 · 16:9</span></div></div>
+    <div class="asset"><div class="art c h-160"></div>
+      <div class="asset-meta">▶ 5s · 1080P<br><span class="mono">海螺 02</span></div></div>
+    <div class="asset"><div class="art b h-280"></div>
+      <div class="asset-meta">雨夜街道，霓虹倒影<br><span class="mono">Seedream 5.0 · 9:16</span></div></div>
+    <div class="asset"><div class="art d h-190"></div>
+      <div class="asset-meta">人物特写，冷调打光<br><span class="mono">Seedream 5.0 · 1:1</span></div></div>
+    <div class="asset"><div class="art c h-240"></div>
+      <div class="asset-meta">货架反光细节<br><span class="mono">Seedream 5.0 · 3:4</span></div></div>
+    <div class="asset"><div class="art h-160"></div>
+      <div class="asset-meta">▶ 10s · 720P<br><span class="mono">海螺 02</span></div></div>
+    <div class="asset"><div class="art b h-200"></div>
+      <div class="asset-meta">门口的男人，逆光<br><span class="mono">Seedream 5.0 · 16:9</span></div></div>
+    <div class="asset"><div class="art d h-280"></div>
+      <div class="asset-meta">收银台俯视<br><span class="mono">Seedream 5.0 · 9:16</span></div></div>
+  </div>
+</main>
+
+<aside class="annot">
+  <b>资产库</b>
+  <ul>
+    <li>瀑布流（<code>columns</code>）—— 产物比例不一，等高网格会大面积裁切</li>
+    <li>静止时只有画面，hover 才出 prompt 与模型名</li>
+    <li>点开是<b>路由级 modal</b>（<code>/assets/:id</code>），背景保留列表；直接访问 URL 则是整页</li>
+    <li>详情页必须能"做同款" → 依赖资产的 <code>source</code> 字段</li>
+  </ul>
+</aside>
+
+</body>
+</html>

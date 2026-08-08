@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>画布项目 — AIGC Pool</title>
+<link rel="stylesheet" href="./tokens.css">
+<link rel="stylesheet" href="./mockup.css">
+<style>
+  .proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-4); }
+  .proj {
+    border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+    background: var(--bg-surface); overflow: hidden;
+    transition: border-color var(--dur-fast) var(--ease);
+  }
+  .proj:hover { border-color: var(--border-strong); }
+  .proj .cover { height: 132px; position: relative; }
+  .proj .info { padding: var(--space-3) var(--space-4) var(--space-4); }
+  .proj .name { font-size: var(--text-md); font-weight: var(--weight-medium); margin-bottom: 3px; }
+  .proj-new {
+    border: 1px dashed var(--border-strong); background: transparent;
+    display: grid; place-items: center; gap: 6px; min-height: 214px;
+    color: var(--text-tertiary); border-radius: var(--radius-lg);
+  }
+  .proj-new:hover { border-color: var(--accent-border); color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo"><span class="logo-mark">A</span> AIGC Pool</div>
+  <nav class="nav">
+    <a class="nav-item" href="./generator.html">生成器</a>
+    <a class="nav-item" href="./canvas-list.html" aria-current="page">画布</a>
+    <a class="nav-item" href="./assets.html">资产</a>
+  </nav>
+  <div class="topbar-right">
+    <span class="credit-badge">⚡ <span class="mono">1,240</span></span>
+    <a class="avatar" href="./me.html">于</a>
+  </div>
+</header>
+
+<main class="page">
+  <h1 class="page-title">画布项目</h1>
+  <p class="page-sub">每个项目是一块无限画布，用来做一部短剧</p>
+
+  <div class="proj-grid">
+    <button class="proj-new">＋<span style="font-size:var(--text-sm)">新建项目</span></button>
+
+    <a class="proj" href="./canvas.html">
+      <div class="cover art"><span class="type-badge">12 张卡片</span></div>
+      <div class="info"><div class="name">深夜便利店</div><div class="hint">2 分钟前编辑</div></div>
+    </a>
+    <a class="proj" href="./canvas.html">
+      <div class="cover art b"><span class="type-badge">28 张卡片</span></div>
+      <div class="info"><div class="name">城市孤岛 MV</div><div class="hint">昨天</div></div>
+    </a>
+    <a class="proj" href="./canvas.html">
+      <div class="cover art c"><span class="type-badge">6 张卡片</span></div>
+      <div class="info"><div class="name">产品广告 · 咖啡机</div><div class="hint">3 天前</div></div>
+    </a>
+    <a class="proj" href="./canvas.html">
+      <div class="cover art d"><span class="type-badge">41 张卡片</span></div>
+      <div class="info"><div class="name">末班地铁</div><div class="hint">上周</div></div>
+    </a>
+  </div>
+</main>
+
+<aside class="annot">
+  <b>画布项目列表</b>
+  <ul>
+    <li><code>/canvas</code> 用 AppLayout（有顶栏），<code>/canvas/:id</code> 才切 CanvasLayout</li>
+    <li>封面取项目里最近一张图片卡片</li>
+    <li>「新建」是虚线占位卡，排在第一位，不用右上角按钮</li>
+  </ul>
+</aside>
+
+</body>
+</html>

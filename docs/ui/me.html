@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>个人中心 — AIGC Pool</title>
+<link rel="stylesheet" href="./tokens.css">
+<link rel="stylesheet" href="./mockup.css">
+<style>
+  .cols { display: grid; grid-template-columns: 1.2fr 1fr; gap: var(--space-4); align-items: start; }
+  .big-num { font-size: var(--text-3xl); font-weight: var(--weight-semi); letter-spacing: -0.02em; }
+  .ledger { font-size: var(--text-xs); }
+  .ledger .row { display: flex; gap: var(--space-3); padding: var(--space-2) 0; border-bottom: 1px solid var(--border-subtle); }
+  .ledger .row:last-child { border-bottom: none; }
+  .ledger .amt { margin-left: auto; }
+  .minus { color: var(--text-secondary); } .plus { color: var(--success); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo"><span class="logo-mark">A</span> AIGC Pool</div>
+  <nav class="nav">
+    <a class="nav-item" href="./generator.html">生成器</a>
+    <a class="nav-item" href="./canvas.html">画布</a>
+    <a class="nav-item" href="./assets.html">资产</a>
+  </nav>
+  <div class="topbar-right">
+    <span class="credit-badge">⚡ <span class="mono">1,240</span></span>
+    <a class="avatar" href="./me.html" aria-current="page">于</a>
+  </div>
+</header>
+
+<main class="page" style="max-width:900px">
+  <h1 class="page-title">个人中心</h1>
+  <p class="page-sub">yuchen · 注册于 2026-07-12</p>
+
+  <div class="cols">
+    <div style="display:flex;flex-direction:column;gap:var(--space-4)">
+
+      <div class="panel">
+        <h3>积分</h3>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:var(--space-5)">
+          <span class="big-num mono" style="color:var(--credit)">1,240</span>
+          <span class="hint">可用积分</span>
+        </div>
+        <!-- 平台统一持有 Key + 积分记账，不接支付。所以这里没有"充值"按钮 -->
+        <p class="hint">积分由管理员发放，本版本不接支付。</p>
+      </div>
+
+      <div class="panel">
+        <h3>最近消耗</h3>
+        <div class="ledger">
+          <div class="row"><span>图片生成 · Seedream 5.0 ×2</span><span class="amt mono minus">−16</span></div>
+          <div class="row"><span>视频生成 · 海螺 02 · 5s</span><span class="amt mono minus">−120</span></div>
+          <div class="row"><span>任务失败退回 · 上游限流</span><span class="amt mono plus">+120</span></div>
+          <div class="row"><span>图片生成 · Seedream 5.0 ×4</span><span class="amt mono minus">−32</span></div>
+          <div class="row"><span>管理员发放</span><span class="amt mono plus">+1,000</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:var(--space-4)">
+      <div class="panel">
+        <h3>存储</h3>
+        <div class="bar" style="margin-bottom:10px"><i style="width:32%"></i></div>
+        <div class="kv" style="padding-top:0"><span class="k">已用</span><span class="v mono">3.2 GB</span></div>
+        <div class="kv"><span class="k">配额</span><span class="v mono">10 GB</span></div>
+      </div>
+
+      <div class="panel">
+        <h3>修改密码</h3>
+        <div class="field"><label for="o">当前密码</label><input class="input" id="o" type="password" placeholder="••••••••"></div>
+        <div class="field"><label for="n">新密码</label><input class="input" id="n" type="password" placeholder="至少 8 位"></div>
+        <button class="btn">保存</button>
+      </div>
+
+      <div class="panel">
+        <h3>账号</h3>
+        <button class="btn" style="width:100%">退出登录</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<aside class="annot">
+  <b>个人中心</b>
+  <ul>
+    <li>只有三件事：积分、存储配额、改密码</li>
+    <li><b>没有充值入口</b> —— 平台统一持有 Key，不接支付（已定前提）</li>
+    <li>积分数字一律 <code>--font-mono</code> + <code>tabular-nums</code>，变化时不跳位</li>
+    <li>余额只认 <code>credit.updated</code> 事件，不做乐观扣减</li>
+  </ul>
+</aside>
+
+</body>
+</html>

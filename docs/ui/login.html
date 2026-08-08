@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 — AIGC Pool</title>
+<link rel="stylesheet" href="./tokens.css">
+<link rel="stylesheet" href="./mockup.css">
+<style>
+  body { display: grid; place-items: center; }
+  /* 登录页是唯一允许出现大面积主色的地方：品牌记忆点，且不与内容争色 */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(600px 400px at 30% 20%, rgba(115,80,245,.22), transparent 70%),
+      radial-gradient(500px 400px at 75% 80%, rgba(192,92,255,.12), transparent 70%);
+  }
+  .auth { width: 360px; position: relative; }
+  .auth-logo { display: flex; align-items: center; gap: 10px; margin-bottom: var(--space-6); }
+  .auth h1 { font-size: var(--text-3xl); font-weight: var(--weight-semi); letter-spacing: -0.02em; margin: 0 0 6px; }
+  .auth .lead { color: var(--text-tertiary); margin: 0 0 var(--space-8); font-size: var(--text-md); }
+  .switch { text-align: center; margin-top: var(--space-5); font-size: var(--text-sm); color: var(--text-tertiary); }
+  .switch a { color: var(--accent-text); }
+</style>
+</head>
+<body>
+
+<div class="auth">
+  <div class="auth-logo">
+    <span class="logo-mark" style="width:28px;height:28px;font-size:var(--text-sm)">A</span>
+    <span style="font-size:var(--text-md);font-weight:var(--weight-semi)">AIGC Pool</span>
+  </div>
+
+  <h1>开始创作</h1>
+  <p class="lead">一个账号，接入全部图像与视频模型</p>
+
+  <div class="field">
+    <label for="u">账号</label>
+    <input class="input" id="u" placeholder="用户名或邮箱" value="yuchen">
+  </div>
+  <div class="field">
+    <label for="p">密码</label>
+    <input class="input" id="p" type="password" placeholder="••••••••" value="password">
+  </div>
+
+  <!-- 错误统一贴在表单下方，不用 toast：登录失败要留在原地可读可改 -->
+  <p class="hint danger" style="margin:-8px 0 16px">账号或密码不正确</p>
+
+  <a class="btn btn-primary btn-lg" href="./generator.html" style="width:100%">登录</a>
+
+  <p class="switch">还没有账号？<a href="#">注册</a></p>
+</div>
+
+<aside class="annot">
+  <b>登录</b>
+  <ul>
+    <li>登录/注册同页切换，走 <code>bare</code> 布局（无顶栏）</li>
+    <li>只做账号密码，<b>无第三方登录、无会员等级</b>（已定前提）</li>
+    <li>唯一允许大面积主色渐变的页面 —— 工作台内不这么做，避免和产物争色</li>
+    <li>错误贴在表单内，不用 toast</li>
+  </ul>
+</aside>
+
+</body>
+</html>

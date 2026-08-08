@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UI 设计稿 — AIGC Pool</title>
+<link rel="stylesheet" href="./tokens.css">
+<link rel="stylesheet" href="./mockup.css">
+<style>
+  .wrap { max-width: 1000px; margin: 0 auto; padding: var(--space-12) var(--space-6) var(--space-16); }
+  h1 { font-size: var(--text-3xl); font-weight: var(--weight-semi); letter-spacing: -0.02em; margin: 0 0 8px; }
+  h2 { font-size: var(--text-md); font-weight: var(--weight-semi); margin: var(--space-10) 0 var(--space-4); }
+  .lead { color: var(--text-tertiary); font-size: var(--text-md); margin: 0 0 var(--space-4); }
+  .links { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap: var(--space-3); }
+  .link {
+    padding: var(--space-4); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+    background: var(--bg-surface); transition: border-color var(--dur-fast) var(--ease);
+  }
+  .link:hover { border-color: var(--accent-border); }
+  .link .n { font-size: var(--text-md); font-weight: var(--weight-medium); margin-bottom: 3px; }
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px,1fr)); gap: var(--space-2); }
+  .sw { border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-subtle); }
+  .sw .c { height: 48px; }
+  .sw .n { padding: 6px 8px; font-size: var(--text-2xs); color: var(--text-secondary); }
+  .type-row { display: flex; align-items: baseline; gap: var(--space-4); padding: var(--space-2) 0; border-bottom: 1px solid var(--border-subtle); }
+  .type-row .tag { width: 96px; font-size: var(--text-2xs); color: var(--text-tertiary); flex: none; }
+  .row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>AIGC Pool · UI 设计</h1>
+  <p class="lead">
+    深色优先 · 内容为主角 · 芯片密集型工作台。<br>
+    规范正文见 <code>../ui-design.md</code>，token 权威定义见 <code>tokens.css</code>。
+  </p>
+
+  <h2>页面</h2>
+  <div class="links">
+    <a class="link" href="./generator.html"><div class="n">生成器 · 图片</div><div class="hint">主界面。含展开态、4 种任务状态、3 类失败</div></a>
+    <a class="link" href="./generator-video.html"><div class="n">生成器 · 视频</div><div class="hint">同一组件，仅 schema 不同</div></a>
+    <a class="link" href="./canvas.html"><div class="n">画布 · 短剧</div><div class="hint">卡片、血缘高亮、对话面板、视口控件</div></a>
+    <a class="link" href="./canvas-list.html"><div class="n">画布项目列表</div><div class="hint">/canvas</div></a>
+    <a class="link" href="./assets.html"><div class="n">资产库</div><div class="hint">瀑布流 + 筛选</div></a>
+    <a class="link" href="./me.html"><div class="n">个人中心</div><div class="hint">积分 / 存储 / 改密码</div></a>
+    <a class="link" href="./login.html"><div class="n">登录</div><div class="hint">bare 布局</div></a>
+  </div>
+
+  <h2>色板</h2>
+  <div class="swatches">
+    <div class="sw"><div class="c" style="background:var(--bg-sunken)"></div><div class="n">bg-sunken<br>#08080A</div></div>
+    <div class="sw"><div class="c" style="background:var(--bg-base)"></div><div class="n">bg-base<br>#0A0A0C</div></div>
+    <div class="sw"><div class="c" style="background:var(--bg-surface)"></div><div class="n">bg-surface<br>#131318</div></div>
+    <div class="sw"><div class="c" style="background:var(--bg-elevated)"></div><div class="n">bg-elevated<br>#1B1B22</div></div>
+    <div class="sw"><div class="c" style="background:var(--accent)"></div><div class="n">accent · 当底<br>#7350F5</div></div>
+    <div class="sw"><div class="c" style="background:var(--accent-text)"></div><div class="n">accent-text · 当字<br>#A992FF</div></div>
+    <div class="sw"><div class="c" style="background:var(--credit)"></div><div class="n">credit<br>#FFB340</div></div>
+    <div class="sw"><div class="c" style="background:var(--success)"></div><div class="n">success<br>#3DD68C</div></div>
+    <div class="sw"><div class="c" style="background:var(--warning)"></div><div class="n">warning · 限流<br>#F5A524</div></div>
+    <div class="sw"><div class="c" style="background:var(--danger)"></div><div class="n">danger · 参数非法<br>#F5556E</div></div>
+    <div class="sw"><div class="c" style="background:var(--muted)"></div><div class="n">muted · 审核拒绝<br>#8A8A96</div></div>
+  </div>
+
+  <h2>字号</h2>
+  <div>
+    <div class="type-row"><span class="tag">3xl / 32</span><span style="font-size:var(--text-3xl);font-weight:600">开始创作</span></div>
+    <div class="type-row"><span class="tag">xl / 20</span><span style="font-size:var(--text-xl);font-weight:600">资产库</span></div>
+    <div class="type-row"><span class="tag">lg / 15</span><span style="font-size:var(--text-lg)">prompt 输入框：深夜便利店的收银台</span></div>
+    <div class="type-row"><span class="tag">md / 14</span><span style="font-size:var(--text-md)">按钮与导航：生成 · 画布 · 资产</span></div>
+    <div class="type-row"><span class="tag">sm / 13</span><span style="font-size:var(--text-sm)">界面正文默认档，中文主力字号</span></div>
+    <div class="type-row"><span class="tag">xs / 12</span><span style="font-size:var(--text-xs);color:var(--text-secondary)">芯片 label、时间戳</span></div>
+    <div class="type-row"><span class="tag">2xs / 11</span><span style="font-size:var(--text-2xs);color:var(--text-tertiary)">徽章角标，不承载关键信息</span></div>
+    <div class="type-row"><span class="tag">mono</span><span class="mono" style="font-size:var(--text-md)">1,240 积分 · seed 8827104 · rev 42</span></div>
+  </div>
+
+  <h2>组件</h2>
+  <div class="panel" style="display:flex;flex-direction:column;gap:var(--space-5)">
+    <div class="row">
+      <button class="btn btn-primary btn-lg">生成</button>
+      <button class="btn btn-primary">主按钮</button>
+      <button class="btn">次按钮</button>
+      <button class="btn btn-ghost">幽灵按钮</button>
+      <button class="btn btn-sm">小按钮</button>
+      <button class="btn" disabled>积分不足</button>
+    </div>
+    <div class="row">
+      <button class="chip model"><span class="thumb"></span><span class="v">Seedream 5.0</span><span class="caret">▾</span></button>
+      <button class="chip"><span class="k">分辨率</span><span class="v">1080P</span><span class="caret">▾</span></button>
+      <button class="chip"><span class="ratio-box r169"></span><span class="v">16:9 · 2张</span><span class="caret">▾</span></button>
+      <button class="chip" aria-expanded="true"><span class="k">展开态</span><span class="v">0.6</span><span class="caret">▾</span></button>
+      <button class="chip error"><span class="k">时长</span><span class="v">7s</span><span class="caret">▾</span></button>
+      <button class="chip migrated"><span class="k">切模型回落</span><span class="v">默认</span><span class="caret">▾</span></button>
+      <button class="chip icon-only">⚙</button>
+    </div>
+    <div class="row">
+      <span class="credit-badge">⚡ <span class="mono">1,240</span></span>
+      <span class="ref-chip">🖼 分镜 1 ×</span>
+      <span class="err-icon err-danger">!</span>
+      <span class="err-icon err-warning">↻</span>
+      <span class="err-icon err-muted">⃠</span>
+      <div class="progress" style="width:120px"><i style="width:62%"></i></div>
+      <div class="tabs"><button class="tab" aria-selected="true">图片</button><button class="tab">视频</button></div>
+    </div>
+  </div>
+
+  <h2>说明</h2>
+  <p class="hint" style="line-height:1.8">
+    这些是静态 HTML 稿，用来定视觉与状态，不是可运行的前端。<br>
+    图片位用 CSS 渐变代替真实产物 —— 稿子要定的是<b>界面</b>，不是模型效果。<br>
+    实现阶段：<code>tokens.css</code> 原样进 <code>src/styles/</code>，<code>mockup.css</code> 里的数值作为组件标注，用 Tailwind 重写。
+  </p>
+
+</div>
+</body>
+</html>

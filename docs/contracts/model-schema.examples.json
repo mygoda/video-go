@@ -1,0 +1,253 @@
+{
+  "$comment": "GET /api/models 的响应示例。两个模型分别覆盖 image / video 两个 tab 的全部控件类型。后端 L1 层按此形态产出声明即可，前端零改动渲染。",
+  "models": [
+    {
+      "id": "seedream-5-pro",
+      "name": "Seedream 5.0 Pro",
+      "vendor": "volcengine",
+      "modality": "image",
+      "enabled": true,
+      "order": 10,
+      "description": "通用高质量出图，支持参考图编辑",
+      "preview_url": "https://cdn.example/models/seedream5.jpg",
+
+      "inputs": [
+        {
+          "key": "reference_images",
+          "label": "参考图",
+          "kind": "image",
+          "required": false,
+          "min_count": 0,
+          "max_count": 3,
+          "accept": ["image/png", "image/jpeg", "image/webp"],
+          "max_bytes": 10485760,
+          "max_pixels": { "width": 4096, "height": 4096 },
+          "hint": "传图后将按提示词对图片进行编辑"
+        }
+      ],
+
+      "params": [
+        {
+          "key": "style_model",
+          "label": "风格模型",
+          "control": "select",
+          "group": "primary",
+          "order": 10,
+          "default": "none",
+          "render_hint": "dropdown",
+          "options": [
+            { "value": "none", "label": "不使用" },
+            { "value": "anime_v3", "label": "动漫 V3" },
+            { "value": "film_a24", "label": "A24 电影感", "badge": "+2 积分" }
+          ]
+        },
+        {
+          "key": "size_group",
+          "label": "尺寸与数量",
+          "control": "compound",
+          "group": "primary",
+          "order": 20,
+          "default": null,
+          "display_template": "{aspect} · {count}张",
+          "fields": [
+            {
+              "key": "aspect",
+              "label": "比例",
+              "control": "aspect_select",
+              "group": "primary",
+              "order": 10,
+              "default": "1:1",
+              "options": [
+                { "value": "1:1", "label": "1:1", "ratio_w": 1, "ratio_h": 1, "pixels": { "width": 1024, "height": 1024 } },
+                { "value": "3:4", "label": "3:4", "ratio_w": 3, "ratio_h": 4, "pixels": { "width": 896, "height": 1152 } },
+                { "value": "4:3", "label": "4:3", "ratio_w": 4, "ratio_h": 3, "pixels": { "width": 1152, "height": 896 } },
+                { "value": "9:16", "label": "9:16", "ratio_w": 9, "ratio_h": 16, "pixels": { "width": 768, "height": 1344 } },
+                { "value": "16:9", "label": "16:9", "ratio_w": 16, "ratio_h": 9, "pixels": { "width": 1344, "height": 768 } }
+              ]
+            },
+            {
+              "key": "count",
+              "label": "数量",
+              "control": "stepper",
+              "group": "primary",
+              "order": 20,
+              "default": 1,
+              "min": 1,
+              "max": 4,
+              "step": 1,
+              "unit": "张"
+            }
+          ]
+        },
+        {
+          "key": "strength",
+          "label": "重绘强度",
+          "control": "slider",
+          "group": "advanced",
+          "order": 10,
+          "default": 0.6,
+          "min": 0.1,
+          "max": 1,
+          "step": 0.05,
+          "help": "越低越贴近原图",
+          "visible_when": { "op": "has_input", "slot": "reference_images" }
+        },
+        {
+          "key": "negative_prompt",
+          "label": "负向提示词",
+          "control": "textarea",
+          "group": "advanced",
+          "order": 20,
+          "default": "",
+          "max_length": 500,
+          "placeholder": "不希望出现的元素"
+        },
+        {
+          "key": "seed",
+          "label": "随机种子",
+          "control": "seed",
+          "group": "advanced",
+          "order": 30,
+          "default": null,
+          "min": 0,
+          "max": 2147483647,
+          "allow_random": true
+        }
+      ],
+
+      "pricing": {
+        "currency": "credit",
+        "base": 8,
+        "modifiers": [
+          { "when": { "op": "eq", "key": "style_model", "value": "film_a24" }, "op": "add", "value": 2, "label": "A24 风格模型" },
+          { "when": { "op": "in", "key": "aspect", "value": ["9:16", "16:9"] }, "op": "mul", "value": 1.2, "label": "宽幅加价" }
+        ],
+        "multiplier_param": "count",
+        "rounding": "ceil"
+      },
+
+      "eta": { "p50_seconds": 14, "p90_seconds": 35 },
+
+      "limits": {
+        "max_concurrent_per_user": 4,
+        "prompt_max_length": 2000,
+        "queue_position_available": true
+      }
+    },
+
+    {
+      "id": "hailuo-2-3",
+      "name": "海螺 2.3",
+      "vendor": "minimax",
+      "modality": "video",
+      "enabled": true,
+      "order": 10,
+      "description": "通用视频生成，支持首帧控制",
+
+      "inputs": [
+        {
+          "key": "first_frame",
+          "label": "首帧",
+          "kind": "image",
+          "required": false,
+          "min_count": 0,
+          "max_count": 1,
+          "accept": ["image/png", "image/jpeg"],
+          "max_bytes": 10485760,
+          "min_pixels": { "width": 300, "height": 300 },
+          "hint": "传图后从该画面开始生成"
+        }
+      ],
+
+      "params": [
+        {
+          "key": "resolution",
+          "label": "分辨率",
+          "control": "select",
+          "group": "primary",
+          "order": 10,
+          "default": "768p",
+          "render_hint": "segmented",
+          "options": [
+            { "value": "512p", "label": "512P" },
+            { "value": "768p", "label": "768P" },
+            { "value": "1080p", "label": "1080P", "badge": "×2 积分" }
+          ]
+        },
+        {
+          "key": "mode",
+          "label": "生成模式",
+          "control": "select",
+          "group": "primary",
+          "order": 20,
+          "default": "standard",
+          "render_hint": "segmented",
+          "options": [
+            { "value": "standard", "label": "普通模式" },
+            { "value": "pro", "label": "专业模式", "badge": "慢" }
+          ]
+        },
+        {
+          "key": "duration",
+          "label": "时长",
+          "control": "select",
+          "group": "primary",
+          "order": 30,
+          "default": 5,
+          "render_hint": "segmented",
+          "options": [
+            { "value": 5, "label": "5s" },
+            { "value": 10, "label": "10s", "disabled": false }
+          ]
+        },
+        {
+          "key": "camera_motion",
+          "label": "运镜",
+          "control": "select",
+          "group": "advanced",
+          "order": 10,
+          "default": "auto",
+          "options": [
+            { "value": "auto", "label": "自动" },
+            { "value": "push_in", "label": "推近" },
+            { "value": "pan_left", "label": "左摇" },
+            { "value": "static", "label": "固定机位" }
+          ],
+          "enabled_when": { "op": "eq", "key": "mode", "value": "pro" },
+          "disabled_hint": "仅专业模式支持指定运镜"
+        },
+        {
+          "key": "seed",
+          "label": "随机种子",
+          "control": "seed",
+          "group": "advanced",
+          "order": 20,
+          "default": null,
+          "min": 0,
+          "max": 2147483647,
+          "allow_random": true
+        }
+      ],
+
+      "pricing": {
+        "currency": "credit",
+        "base": 4,
+        "$comment": "按秒计价：5s 普通 768P = 4 × 5 = 20 积分；10s 专业 1080P = 4 × 2 × 1.5 × 10 = 120 积分",
+        "modifiers": [
+          { "when": { "op": "eq", "key": "resolution", "value": "1080p" }, "op": "mul", "value": 2, "label": "1080P" },
+          { "when": { "op": "eq", "key": "mode", "value": "pro" }, "op": "mul", "value": 1.5, "label": "专业模式" }
+        ],
+        "multiplier_param": "duration",
+        "rounding": "ceil"
+      },
+
+      "eta": { "p50_seconds": 120, "p90_seconds": 300, "scales_with": "duration" },
+
+      "limits": {
+        "max_concurrent_per_user": 2,
+        "prompt_max_length": 1500,
+        "queue_position_available": true
+      }
+    }
+  ]
+}
