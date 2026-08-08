@@ -50,28 +50,6 @@ func (s *server) logCancelUpstream(taskID string, err error) {
 }
 
 // decorateAssets 把存储键翻译成可直接放进 <img src> 的内容 URL。
-//
-// 存储键（user/xx/asset/yy.png）是内部布局，一旦下发给前端就等于把它焊死：
-// 换一个存储后端所有历史资产的地址全变。内容 URL 只暴露 asset id，
-// 布局怎么改都不影响前端。
 func (s *server) decorateAssets(items []domain.Asset) []domain.Asset {
-	base := s.deps.Config.PublicBaseURL
-	out := make([]domain.Asset, 0, len(items))
-	for _, a := range items {
-		a.Original = asset.ContentURL(base, a.ID, asset.VariantOriginal)
-		if a.ThumbKey != nil {
-			u := asset.ContentURL(base, a.ID, asset.VariantThumb512)
-			a.Thumb512 = &u
-		} else {
-			a.Thumb512 = nil
-		}
-		if a.PosterKey != nil {
-			u := asset.ContentURL(base, a.ID, asset.VariantPoster)
-			a.Poster = &u
-		} else {
-			a.Poster = nil
-		}
-		out = append(out, a)
-	}
-	return out
+	return asset.DecorateURLs(s.deps.Config.PublicBaseURL, items)
 }

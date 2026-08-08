@@ -4,6 +4,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/aigc-pool/aigc-pool/internal/domain"
 )
 
 // maxSegment 是单个 key 片段的字符上限。
@@ -66,6 +68,35 @@ func ContentURL(baseURL, assetID string, v Variant) string {
 		return ""
 	}
 	return strings.TrimRight(baseURL, "/") + "/api/assets/" + assetID + "/content?variant=" + string(v)
+}
+
+// DecorateURLs 把一批资产的存储键投影成可直接放进 <img src> 的内容 URL。
+//
+// 存储键（users/xx/asset/yy.png）是内部布局，一旦下发给前端就等于把它焊死：
+// 换一个存储后端所有历史资产的地址全变。内容 URL 只暴露 asset id。
+//
+// 它住在这里而不是 httpapi，是因为投影的调用方不止一处：REST 响应要投，
+// L2 推 task.succeeded 事件时也要投。两处各写一份的结果就是同一件资产
+// 在 SSE 里没有 URL、在 REST 里有——前端拿到成功事件先渲染出一张裂图。
+func DecorateURLs(baseURL string, items []domain.Asset) []domain.Asset {
+	out := make([]domain.Asset, 0, len(items))
+	for _, a := range items {
+		a.Original = ContentURL(baseURL, a.ID, VariantOriginal)
+		if a.ThumbKey != nil {
+			u := ContentURL(baseURL, a.ID, VariantThumb512)
+			a.Thumb512 = &u
+		} else {
+			a.Thumb512 = nil
+		}
+		if a.PosterKey != nil {
+			u := ContentURL(baseURL, a.ID, VariantPoster)
+			a.Poster = &u
+		} else {
+			a.Poster = nil
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // sanitizeSegment 把一个 id 压成只含 [0-9a-zA-Z_-] 的片段。

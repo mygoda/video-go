@@ -384,7 +384,10 @@ func (s *Service) finish(ctx context.Context, task domain.Task, refs []adapter.A
 	s.stopPolling(task.ID)
 	s.release(ctx, task.ID)
 
-	s.publish(ctx, stream.TaskSucceeded(task.UserID, task.ID, assets, actual))
+	// 事件里的资产必须带 URL：StorageKey 这类内部键对前端毫无意义，而
+	// task.succeeded 正是前端把占位卡片换成真实产物的那一刻。投影复用
+	// asset.DecorateURLs——REST 响应走的是同一个函数，两条路才不会分叉。
+	s.publish(ctx, stream.TaskSucceeded(task.UserID, task.ID, asset.DecorateURLs(s.deps.PublicBaseURL, assets), actual))
 	s.publishCredit(ctx, task.UserID)
 	if len(assets) > 0 {
 		id := assets[0].ID
@@ -399,13 +402,23 @@ func (s *Service) finish(ctx context.Context, task domain.Task, refs []adapter.A
 //
 // 派生是转存之后的独立一步，失败只让前端回退到原图；把它做成能让任务失败的
 // 一步，等于用一次真实生成的钱去赌一次缩略图编码。
+//
+// 派生出的键要回填进入参切片：紧随其后的 task.succeeded 事件按这几个键投影
+// URL，不回填的话事件里没有缩略图、REST 拉同一条任务却有——前端两边对不上。
 func (s *Service) derive(ctx context.Context, assets []domain.Asset) {
 	if s.deps.Deriver == nil {
 		return
 	}
-	for _, a := range assets {
-		if _, err := s.deps.Deriver.Derive(context.WithoutCancel(ctx), a); err != nil {
-			s.log.Warn("生成派生规格失败，资产仍然有效", "asset_id", a.ID, "err", err)
+	for i := range assets {
+		variants, err := s.deps.Deriver.Derive(context.WithoutCancel(ctx), assets[i])
+		if err != nil {
+			s.log.Warn("生成派生规格失败，资产仍然有效", "asset_id", assets[i].ID, "err", err)
+		}
+		if k, ok := variants[asset.VariantThumb512]; ok {
+			assets[i].ThumbKey = &k
+		}
+		if k, ok := variants[asset.VariantPoster]; ok {
+			assets[i].PosterKey = &k
 		}
 	}
 }
