@@ -109,7 +109,7 @@ func TestCanvasApplyOps(t *testing.T) {
 	cardID := "card_" + uid.Token(8)
 	rev, err := repo.ApplyOps(ctx, p.ID, p.Revision, []domain.CanvasOp{
 		{Type: domain.OpCardCreate, Card: &domain.Card{
-			ID: cardID, Kind: domain.CardKindText, X: 10, Y: 20, W: 100, H: 50, Z: 1,
+			ID: cardID, Kind: domain.CardKindText, Title: "便签", X: 10, Y: 20, W: 100, H: 50, Z: 1,
 			Text: strPtrOf("hello"), Refs: []string{},
 		}},
 	})
@@ -128,6 +128,11 @@ func TestCanvasApplyOps(t *testing.T) {
 	}
 	if snap.Cards[0].Text == nil || *snap.Cards[0].Text != "hello" {
 		t.Errorf("card text lost: %v", snap.Cards[0].Text)
+	}
+	// title 是后加的列，钉住它是因为它此前整条链路都不存在：
+	// 前端一直在发，后端一路静默丢弃，用户改完标题一刷新就没了。
+	if snap.Cards[0].Title != "便签" {
+		t.Errorf("card title lost: %q", snap.Cards[0].Title)
 	}
 	// Refs 在 API 里是 required，NULL 也要投影成空数组而不是 null。
 	if snap.Cards[0].Refs == nil {
@@ -158,7 +163,7 @@ func TestCanvasApplyOps(t *testing.T) {
 	// move / update / viewport 一批按序应用。
 	rev2, err := repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
 		{Type: domain.OpCardMove, ID: cardID, X: f64(111), Y: f64(222), Z: f64(3)},
-		{Type: domain.OpCardUpdate, ID: cardID, Patch: map[string]any{"w": 300.0, "prompt": "a cat"}},
+		{Type: domain.OpCardUpdate, ID: cardID, Patch: map[string]any{"w": 300.0, "prompt": "a cat", "title": "改过的标题"}},
 		{Type: domain.OpViewportSet, Viewport: &domain.Viewport{X: 5, Y: 6, K: 1.5}},
 	})
 	requireNoErr(t, err, "apply a batch")
@@ -177,6 +182,9 @@ func TestCanvasApplyOps(t *testing.T) {
 	}
 	if card.Prompt == nil || *card.Prompt != "a cat" {
 		t.Errorf("patch prompt = %v", card.Prompt)
+	}
+	if card.Title != "改过的标题" {
+		t.Errorf("patch title = %q", card.Title)
 	}
 	if snap.Viewport == nil || snap.Viewport.K != 1.5 {
 		t.Errorf("viewport was not persisted: %+v", snap.Viewport)

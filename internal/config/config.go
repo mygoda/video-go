@@ -96,6 +96,17 @@ type Config struct {
 	WorkerConcurrency int
 	// PollInterval 是轮询的默认间隔，模型配置未指定时生效。
 	PollInterval time.Duration
+
+	// StoryboardModelID 是画布对话拆分镜默认用哪个模型。
+	// 留空表示「取第一个启用的 chat 族模型」——本地起一份新库时不必先配它。
+	// 它存的是 models 表的 id，不是上游模型名：换供应商是改一条配置，
+	// 不是改代码。
+	StoryboardModelID string
+
+	// ComposeModelID 是画布一键合成默认用哪个模型，与 StoryboardModelID 同理：
+	// 留空表示「取第一个启用的 compose 族模型」。真正能转码拼接的实现接进来
+	// 之后，切过去只是改这一个变量。
+	ComposeModelID string
 }
 
 // Load 从环境变量读取配置。
@@ -108,10 +119,12 @@ func Load() (*Config, error) {
 	var missing []string
 
 	cfg := &Config{
-		HTTPAddr:      envString("HTTP_ADDR", DefaultHTTPAddr),
-		StorageRoot:   envString("STORAGE_ROOT", DefaultStorageRoot),
-		PublicBaseURL: strings.TrimRight(envString("PUBLIC_BASE_URL", DefaultPublicBaseURL), "/"),
-		CORSOrigins:   splitCSV(envString("CORS_ORIGINS", DefaultCORSOrigins)),
+		HTTPAddr:          envString("HTTP_ADDR", DefaultHTTPAddr),
+		StorageRoot:       envString("STORAGE_ROOT", DefaultStorageRoot),
+		PublicBaseURL:     strings.TrimRight(envString("PUBLIC_BASE_URL", DefaultPublicBaseURL), "/"),
+		CORSOrigins:       splitCSV(envString("CORS_ORIGINS", DefaultCORSOrigins)),
+		StoryboardModelID: envString("STORYBOARD_MODEL", ""),
+		ComposeModelID:    envString("COMPOSE_MODEL", ""),
 	}
 
 	if err := validateHTTPAddr(cfg.HTTPAddr); err != nil {
@@ -181,6 +194,8 @@ func (c *Config) Redacted() map[string]string {
 		"jwt_ttl":            c.JWTTTL.String(),
 		"worker_concurrency": strconv.Itoa(c.WorkerConcurrency),
 		"poll_interval":      c.PollInterval.String(),
+		"storyboard_model":   c.StoryboardModelID,
+		"compose_model":      c.ComposeModelID,
 	}
 }
 

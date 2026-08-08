@@ -327,6 +327,7 @@ func (s *Service) invoke(ctx context.Context, model domain.ModelConfig, in adapt
 	}
 	return adapter.SubmitResult{}, fmt.Errorf("驱动 %q 未注册", name)
 }
+
 // finish 是任务成功的收尾：转存 → 派生 → 血缘 → 置 succeeded → 结算 → 推事件。
 //
 // # 顺序不能反
@@ -434,7 +435,26 @@ func (s *Service) recordLineage(ctx context.Context, task domain.Task, inputAsse
 	if s.deps.Lineage == nil || len(outputs) == 0 {
 		return
 	}
-	edges := asset.InputEdges(inputAssetIDs, outputs)
+	// 合成的片段记成 composed_from 而不是 input：两者的语义不同，
+	// 前者是"这条成片由它们编成"，后者是"这件素材被喂给了上游"。
+	// 同一批 id 若两种关系都记，血缘图上会出现两条并行边，
+	// 「做同款」也会把片段当成参考素材再喂一次。
+	segments := task.Inputs[string(domain.LineageComposedFrom)]
+	isSegment := make(map[string]struct{}, len(segments))
+	for _, id := range segments {
+		isSegment[id] = struct{}{}
+	}
+	plain := make([]string, 0, len(inputAssetIDs))
+	for _, id := range inputAssetIDs {
+		if _, ok := isSegment[id]; !ok {
+			plain = append(plain, id)
+		}
+	}
+
+	edges := asset.InputEdges(plain, outputs)
+	for _, out := range outputs {
+		edges = append(edges, asset.ComposedEdges(segments, out)...)
+	}
 	// 单卡重跑：新产物指向被替换的旧产物。旧产物 id 由提交方写进
 	// inputs 的 rerun_of 槽——它不是喂给上游的素材，只是血缘的锚点。
 	for _, prev := range task.Inputs["rerun_of"] {

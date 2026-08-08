@@ -11,6 +11,7 @@ import (
 
 	"github.com/aigc-pool/aigc-pool/internal/adapter"
 	"github.com/aigc-pool/aigc-pool/internal/adapter/ark"
+	"github.com/aigc-pool/aigc-pool/internal/adapter/compose"
 	"github.com/aigc-pool/aigc-pool/internal/adapter/googlelro"
 	"github.com/aigc-pool/aigc-pool/internal/adapter/mapping"
 	"github.com/aigc-pool/aigc-pool/internal/adapter/mock"
@@ -204,6 +205,10 @@ func registerDrivers(renderer mapping.Renderer, cfg *config.Config) adapter.Regi
 	mut.MustRegister(ark.New(ark.Driver{HTTP: client, Renderer: renderer}))
 	mut.MustRegister(openaivideo.New(openaivideo.Driver{HTTP: client, Renderer: renderer}))
 	mut.MustRegister(googlelro.New(googlelro.Driver{HTTP: client, Renderer: renderer}))
+
+	// compose 不出网：它把一组已有产物按顺序编成一份清单。它仍然出现在这里，
+	// 是因为进入任务链路（状态机、转存、退款、SSE）的唯一入口就是驱动注册表。
+	mut.MustRegister(compose.New(compose.Driver{}))
 
 	slog.Info("drivers registered", "names", reg.Names())
 	return reg

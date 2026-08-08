@@ -176,7 +176,7 @@ func (r *canvasRepo) DeleteProject(ctx context.Context, id string) error {
 	return nil
 }
 
-const cardColumns = `id, kind, x, y, w, h, z, task_id, asset_id, ` + "`text`" + `,
+const cardColumns = `id, kind, title, x, y, w, h, z, task_id, asset_id, ` + "`text`" + `,
 	model_id, prompt, params, refs, history, auto_placed, created_at`
 
 func scanCard(s rowScanner) (domain.Card, error) {
@@ -191,7 +191,7 @@ func scanCard(s rowScanner) (domain.Card, error) {
 		refsRaw    []byte
 		historyRaw []byte
 	)
-	err := s.Scan(&c.ID, &c.Kind, &c.X, &c.Y, &c.W, &c.H, &c.Z,
+	err := s.Scan(&c.ID, &c.Kind, &c.Title, &c.X, &c.Y, &c.W, &c.H, &c.Z,
 		&taskID, &assetID, &text, &modelID, &prompt,
 		&paramsRaw, &refsRaw, &historyRaw, &c.AutoPlaced, &c.CreatedAt)
 	if err != nil {
@@ -532,16 +532,17 @@ func insertCard(ctx context.Context, tx *sql.Tx, projectID string, c domain.Card
 	// 不该因为卡片已存在而整批失败。
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO canvas_cards
-		 (id, project_id, kind, x, y, w, h, z, task_id, asset_id, `+"`text`"+`,
+		 (id, project_id, kind, title, x, y, w, h, z, task_id, asset_id, `+"`text`"+`,
 		  model_id, prompt, params, refs, history, auto_placed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
+		   title = VALUES(title),
 		   x = VALUES(x), y = VALUES(y), w = VALUES(w), h = VALUES(h), z = VALUES(z),
 		   task_id = VALUES(task_id), asset_id = VALUES(asset_id), `+"`text`"+` = VALUES(`+"`text`"+`),
 		   model_id = VALUES(model_id), prompt = VALUES(prompt), params = VALUES(params),
 		   refs = VALUES(refs), history = VALUES(history), auto_placed = VALUES(auto_placed),
 		   deleted_at = NULL`,
-		c.ID, projectID, string(c.Kind), c.X, c.Y, c.W, c.H, c.Z,
+		c.ID, projectID, string(c.Kind), c.Title, c.X, c.Y, c.W, c.H, c.Z,
 		nullString(c.TaskID), nullString(c.AssetID), nullString(c.Text),
 		nullString(c.ModelID), nullString(c.Prompt), params, refs, history, c.AutoPlaced)
 	if err != nil {
@@ -555,6 +556,7 @@ func insertCard(ctx context.Context, tx *sql.Tx, projectID string, c domain.Card
 // 白名单而不是"把 patch 的 key 当列名拼进 SQL"：后者是一条直接的注入通道，
 // 而且会让客户端能改 project_id 这种它根本不该碰的列。
 var cardPatchColumns = map[string]string{
+	"title":       "title = ?",
 	"w":           "w = ?",
 	"h":           "h = ?",
 	"task_id":     "task_id = ?",
@@ -620,6 +622,18 @@ func cardPatchArg(key string, value any) (any, error) {
 			return nil, invalidParam("card." + key + " is not valid JSON: " + err.Error())
 		}
 		return arg, nil
+	case "title":
+		// title 那一列是 NOT NULL DEFAULT ''，因此 null 落空串而不是 NULL：
+		// "把标题清空"和"这张卡没有标题"在产品上是同一件事，
+		// 让它们在库里也只有一种表示，读回来就不必再判两种空。
+		if value == nil {
+			return "", nil
+		}
+		s, ok := value.(string)
+		if !ok {
+			return nil, invalidParam("card.title must be a string or null")
+		}
+		return s, nil
 	case "w", "h":
 		f, ok := toFloat(value)
 		if !ok {

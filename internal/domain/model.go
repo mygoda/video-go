@@ -15,13 +15,20 @@ const (
 // chat / images 统一走 OpenAI 协议（同步返回）；video 内部再按 VideoProtocol
 // 分驱动（异步提交-轮询）；mock 是本地开发用的假驱动，走**完全相同**的
 // interface / 状态机 / 转存 / 记账路径，只替换最底层的 HTTP 调用。
+//
+// compose 是本地合成族：它不打任何上游，把一组已有产物按顺序编成一份清单。
+// 之所以仍然做成一个协议族而不是在 httpapi 里就地拼一份 JSON，是因为
+// 「一键合成」要的是一条**真任务**——任务表、状态机、退款、SSE、任务监控
+// 一样不能少，而那条链路的入口只有 driver 一个。等到真正能拼视频的上游
+// （或本地转码服务）接进来时，换掉的只是这一个 driver。
 type ProtocolFamily string
 
 const (
-	FamilyChat   ProtocolFamily = "chat"
-	FamilyImages ProtocolFamily = "images"
-	FamilyVideo  ProtocolFamily = "video"
-	FamilyMock   ProtocolFamily = "mock"
+	FamilyChat    ProtocolFamily = "chat"
+	FamilyImages  ProtocolFamily = "images"
+	FamilyVideo   ProtocolFamily = "video"
+	FamilyMock    ProtocolFamily = "mock"
+	FamilyCompose ProtocolFamily = "compose"
 )
 
 // VideoProtocol 是视频族的具体协议。

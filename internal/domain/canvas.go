@@ -44,11 +44,15 @@ type CardVersion struct {
 type Card struct {
 	ID   string   `json:"id"`
 	Kind CardKind `json:"kind"`
-	X    float64  `json:"x"`
-	Y    float64  `json:"y"`
-	W    float64  `json:"w"`
-	H    float64  `json:"h"`
-	Z    float64  `json:"z"`
+	// Title 与 Refs / History 同理恒定序列化，不加 omitempty：
+	// 前端六处直接读它，少一个字段就是一次白屏。空串是合法值
+	// （本字段是后加的，历史卡片没有标题）。
+	Title string  `json:"title"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	W     float64 `json:"w"`
+	H     float64 `json:"h"`
+	Z     float64 `json:"z"`
 
 	TaskID  *string `json:"task_id"`
 	AssetID *string `json:"asset_id"`
