@@ -39,5 +39,5 @@ export function progressCopy(task: Task): string {
 }
 
 export function taskAssets(task: Task): Asset[] {
-  return task.status === 'succeeded' ? task.assets : [];
+  return task.status === 'succeeded' ? (task.assets ?? []) : [];
 }

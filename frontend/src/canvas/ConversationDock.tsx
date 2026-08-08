@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasCard, CanvasMessage } from '@/api/types';
+import { cardTitle } from './cardTitle';
 import { api } from '@/api/endpoints';
 import { qk, useSkills } from '@/api/queries';
 import { Popover } from '@/components/Popover';
@@ -75,10 +76,10 @@ export function ConversationDock({ projectId, conversation, refCards, onRemoveRe
               <div className="ref-strip">
                 {refCards.map((c) => (
                   <span className="ref-chip" key={c.id}>
-                    {c.title}
+                    {cardTitle(c)}
                     <button
                       type="button"
-                      aria-label={`取消引用 ${c.title}`}
+                      aria-label={`取消引用 ${cardTitle(c)}`}
                       style={{ background: 'none', border: 'none', color: 'inherit', padding: 0 }}
                       onClick={() => onRemoveRef(c.id)}
                     >

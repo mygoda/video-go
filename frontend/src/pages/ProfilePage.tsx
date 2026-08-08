@@ -1,23 +1,53 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { useCreditLedger, useMe } from '@/api/queries';
-import type { CreditLedgerType } from '@/api/types';
+import { useCreditLedger, useMe, useModels, useTasks } from '@/api/queries';
+import type { CreditLedgerEntry, Task, TaskErrorCode } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
+import { formatBytes } from '@/components/admin/format';
+import { presentFailure } from '@/components/task/failure';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 
-const LEDGER_LABEL: Record<CreditLedgerType, string> = {
-  hold: '任务预扣',
-  charge: '任务扣费',
-  refund: '退回',
-  topup: '发放',
-  adjust: '调整',
+const MODALITY_LABEL: Record<Task['modality'], string> = {
+  image: '图片生成',
+  video: '视频生成',
 };
 
-function formatBytes(bytes: number): string {
-  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+/** 只有这几个 code 有专门文案，其余走不带后缀的「任务失败退回」，免得出现「退回 · 生成失败」这种绕口话 */
+const NAMED_ERROR_CODES = new Set<string>([
+  'invalid_param',
+  'upstream_rate_limited',
+  'content_rejected',
+  'insufficient_credit',
+]);
+
+/**
+ * 把一条账本记录说成人话。hold / charge 的 reason 是内部记账串（"task hold"），
+ * 一律不外显；模态与模型名靠 task_id 回查任务拿，查不到就退回泛化文案。
+ */
+function describeEntry(
+  entry: CreditLedgerEntry,
+  taskById: Map<string, Task>,
+  modelNameById: Map<string, string>,
+): string {
+  if (entry.type === 'topup') return '管理员发放';
+  if (entry.type === 'adjust') return '管理员调整';
+  if (entry.type === 'refund') {
+    const code = entry.reason?.split(/[:：]/).pop()?.trim() ?? '';
+    if (!NAMED_ERROR_CODES.has(code)) return '任务失败退回';
+    const p = presentFailure({ code: code as TaskErrorCode, message: '', retryable: false, charged: false });
+    return `任务失败退回 · ${p.title}`;
+  }
+
+  const task = entry.task_id ? taskById.get(entry.task_id) : undefined;
+  if (!task) return '任务消耗';
+  const parts = [MODALITY_LABEL[task.modality]];
+  const modelName = modelNameById.get(task.model_id);
+  if (modelName) parts.push(modelName);
+  const count = task.assets?.length ?? 0;
+  return `${parts.join(' · ')}${count > 1 ? ` ×${count}` : ''}`;
 }
 
 export function ProfilePage() {
@@ -25,6 +55,9 @@ export function ProfilePage() {
   const signOut = useAuthStore((s) => s.signOut);
   const { data: me } = useMe(isAuthed);
   const { data: ledger } = useCreditLedger();
+  const { data: tasks } = useTasks();
+  const { data: imageModels } = useModels('image');
+  const { data: videoModels } = useModels('video');
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -65,6 +98,13 @@ export function ProfilePage() {
 
   const usedRatio = me ? Math.min(1, me.storage_used / Math.max(me.storage_quota, 1)) : 0;
 
+  const taskById = new Map((tasks ?? []).map((t) => [t.id, t]));
+  const modelNameById = new Map(
+    [...(imageModels ?? []), ...(videoModels ?? [])].map((m) => [m.id, m.name]),
+  );
+  // hold/charge 是同一笔消费的两条记账，charge 结算为 0 时只是记账收尾，对用户没有信息量
+  const ledgerRows = (ledger?.items ?? []).filter((e) => !(e.type === 'charge' && e.amount === 0));
+
   return (
     <main className="page" style={{ maxWidth: 900 }}>
       <h1 className="page-title">个人中心</h1>
@@ -94,16 +134,16 @@ export function ProfilePage() {
           <div className="panel">
             <h3>最近消耗</h3>
             <div className="ledger">
-              {(ledger?.items ?? []).map((entry) => (
+              {ledgerRows.map((entry) => (
                 <div className="row" key={entry.id}>
-                  <span>{entry.reason ?? LEDGER_LABEL[entry.type]}</span>
+                  <span>{describeEntry(entry, taskById, modelNameById)}</span>
                   <span className={`amt mono ${entry.amount < 0 ? 'minus' : 'plus'}`}>
                     {entry.amount < 0 ? '−' : '+'}
                     {Math.abs(entry.amount).toLocaleString()}
                   </span>
                 </div>
               ))}
-              {!ledger?.items.length && <p className="hint">还没有积分流水。</p>}
+              {ledgerRows.length === 0 && <p className="hint">还没有积分流水。</p>}
             </div>
           </div>
         </div>

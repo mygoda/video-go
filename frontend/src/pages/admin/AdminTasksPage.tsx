@@ -23,13 +23,20 @@ const STATUSES = [
   { value: 'canceled', label: '已取消' },
 ];
 
-/** 失败三分类，DEM-63 要求单独看得见。标题与配色一律走 presentFailure，别在管理端另立一套 */
-const FAILURE_CODES = (['invalid_param', 'upstream_rate_limited', 'content_rejected'] as const).map(
-  (code): { value: TaskErrorCode; label: string; tone: string } => {
-    const p = presentFailure({ code, message: '', retryable: false, charged: false });
-    return { value: code, label: p.title, tone: p.tone };
-  },
-);
+/**
+ * 失败分类按后端实际返回的 by_error_code 键渲染，不预设白名单 —— 之前固定只认
+ * invalid_param / upstream_rate_limited / content_rejected 三类，真实的 internal_error
+ * 落在名单外，汇总卡和分类面板就一起显示成 0。标题与配色仍走 presentFailure。
+ */
+function failureRows(byErrorCode: Record<string, number> | undefined) {
+  return Object.entries(byErrorCode ?? {})
+    .filter(([, count]) => count > 0)
+    .map(([code, count]) => {
+      const p = presentFailure({ code: code as TaskErrorCode, message: '', retryable: false, charged: false });
+      return { code, count, label: p.title, tone: p.tone };
+    })
+    .sort((a, b) => b.count - a.count);
+}
 
 const BREAKER_LABEL: Record<string, { text: string; tone: string }> = {
   closed: { text: '正常', tone: 'tone-success' },
@@ -74,7 +81,12 @@ export function AdminTasksPage() {
     onError: (err) => toast(errorText(err), 'danger'),
   });
 
-  const failureTotal = FAILURE_CODES.reduce((sum, c) => sum + (stats?.by_error_code[c.value] ?? 0), 0);
+  const rows = failureRows(stats?.by_error_code);
+  const failureTotal = stats?.by_status.failed ?? 0;
+  // 下拉只列本窗口真实出现过的 code；已选中的那个即便换窗口后消失也要留住，否则筛选条件看不见
+  const codeOptions = rows.some((r) => r.code === errorCode) || !errorCode
+    ? rows.map((r) => ({ value: r.code, label: r.label }))
+    : [...rows.map((r) => ({ value: r.code, label: r.label })), { value: errorCode, label: errorCode }];
 
   return (
     <>
@@ -116,21 +128,21 @@ export function AdminTasksPage() {
         </div>
         <div className="stat tone-danger">
           <div className="label">失败</div>
-          <div className="value mono">{failureTotal + (stats?.by_error_code.other ?? 0)}</div>
+          <div className="value mono">{failureTotal}</div>
         </div>
       </div>
 
       <div className="admin-split">
         <div className="panel">
           <h3>失败分类</h3>
-          {failureTotal === 0 ? (
+          {rows.length === 0 ? (
             <p className="hint">该时间窗内没有失败任务。</p>
           ) : (
             <div className="bar-chart">
-              {FAILURE_CODES.map((c) => {
-                const count = stats?.by_error_code[c.value] ?? 0;
+              {rows.map((c) => {
+                const count = c.count;
                 return (
-                  <div className="item" key={c.value}>
+                  <div className="item" key={c.code}>
                     <div className="top">
                       <span>{c.label}</span>
                       <span className="mono">{count}</span>
@@ -199,7 +211,7 @@ export function AdminTasksPage() {
           onChange={(e) => setErrorCode(e.target.value)}
         >
           <option value="">全部失败类型</option>
-          {FAILURE_CODES.map((c) => (
+          {codeOptions.map((c) => (
             <option key={c.value} value={c.value}>
               {c.label}
             </option>

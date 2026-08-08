@@ -55,7 +55,8 @@ export interface CreditLedgerEntry {
   operator_id?: string | null;
 }
 
-export type AssetType = 'image' | 'video';
+/** 后端 skill / 对话类任务会产出 type=text 的产物，资产库里混着，别当图片渲染 */
+export type AssetType = 'image' | 'video' | 'text';
 
 export interface Asset {
   id: string;
@@ -64,14 +65,16 @@ export interface Asset {
   thumb_512: string;
   original: string;
   poster?: string;
-  width: number;
-  height: number;
+  /** text 产物没有尺寸，后端整个字段不返回 */
+  width?: number;
+  height?: number;
   duration_seconds?: number;
   created_at: string;
   /** 「做同款」与「单卡重跑」的唯一依据 */
   source: {
     model_id: string;
-    model_name: string;
+    /** 后端 source 里没有这个字段，展示前必须兜底 */
+    model_name?: string;
     prompt: string;
     params: Record<string, JsonValue>;
     input_asset_ids: string[];
@@ -85,12 +88,14 @@ export interface Task {
   modality: 'image' | 'video';
   prompt: string;
   params: Record<string, JsonValue>;
-  inputs: Record<string, string[]>;
+  /** 后端不回显任务的输入槽，只在提交时用得上 */
+  inputs?: Record<string, string[]>;
   estimated_cost: number;
   eta_seconds: number | null;
   queue_position: number | null;
   progress: number | null;
-  assets: Asset[];
+  /** 只有 succeeded 的任务才有；排队 / 失败时后端整个字段不返回 */
+  assets?: Asset[];
   error: TaskError | null;
   created_at: string;
   canvas_id?: string;
@@ -146,16 +151,19 @@ export interface CanvasCard {
   z: number;
   task_id?: string;
   asset_id?: string;
-  title: string;
+  /** 后端 Card 目前没有这个字段，提交后会被丢弃 —— 渲染一律走 cardTitle() 兜底 */
+  title?: string;
   text?: string;
   model_id?: string;
   prompt?: string;
   params?: Record<string, JsonValue>;
   /** 血缘：这张卡由哪些卡片作为输入生成。不画连线，只在选中时高亮 */
   refs: string[];
-  history: { asset_id: string; prompt: string; at: number }[];
+  /** 后端可能整个字段不返回，读之前必须判空 */
+  history?: { asset_id: string; prompt: string; at: number }[];
   auto_placed: boolean;
-  created_at: number;
+  /** RFC3339 字符串。后端是 time.Time，发数字会被 Time.UnmarshalJSON 顶回 400 */
+  created_at: string;
 }
 
 export interface CanvasMessage {

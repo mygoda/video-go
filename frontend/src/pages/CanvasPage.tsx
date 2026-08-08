@@ -118,12 +118,13 @@ export function CanvasPage() {
       w: 220,
       h: 120,
       z: cards.length + 1,
-      title: '便签',
+      // 不带 title：后端 Card 没有这个列，带了也会被丢弃，只会让刷新前后标题不一致。
+      // 标题统一由 cardTitle() 按 kind 给出，后端补上 title 后再在这里带回来。
       text: '双击编辑…',
       refs: [],
       history: [],
       auto_placed: false,
-      created_at: Date.now(),
+      created_at: new Date().toISOString(),
     };
     enqueue([{ type: 'card.create', card }], (prev) => ({ ...prev, cards: [...prev.cards, card] }));
     setSelectedId(card.id);

@@ -8,12 +8,16 @@ Vite + React 18 + TypeScript(strict) 的单页应用。实现 `docs/frontend-des
 ```bash
 cd frontend
 npm install
-cp .env.example .env.local   # 可选，默认就是 mock 模式
 npm run dev                  # http://localhost:5173
 ```
 
-打开后默认落在 `/create/image`。演示账号 **yuchen / password**（mock 模式内置，
-登录框已预填）；也可以直接注册一个新账号，注册送 500 积分。
+**默认直连真后端**，先按项目根 README 把后端起起来（代理默认指向
+`http://localhost:18080`，端口对不上见根 README「前端 · 端口」）。
+打开后默认落在 `/create/image`，用种子账号 **demo / user-dev-only** 登录，
+或者直接注册一个新账号。
+
+后端没起、只想调界面时再开离线 mock：`cp .env.example .env.local`，
+把里面的 `VITE_USE_MOCK=true` 取消注释。
 
 ## mock 后端 / 真后端切换
 
@@ -21,8 +25,11 @@ npm run dev                  # http://localhost:5173
 
 | `VITE_USE_MOCK` | 行为 |
 | --- | --- |
-| `true`（默认） | 请求在 `src/api/client.ts` 里被拦下，路由到 `src/mock/backend.ts` 的内存后端 |
-| `false` | 请求打到 `VITE_API_BASE`（默认 `/api`），dev server 代理到 `VITE_API_PROXY_TARGET`（默认 `http://localhost:8080`） |
+| 未设置 / 其他任何值（默认） | 请求打到 `VITE_API_BASE`（默认 `/api`），dev server 代理到 `VITE_API_PROXY_TARGET`（默认 `http://localhost:18080`） |
+| `true` | 请求在 `src/api/client.ts` 里被拦下，路由到 `src/mock/backend.ts` 的内存后端，不发任何网络请求 |
+
+只认字符串 `true`，是为了让「忘了配」和「配错了」都落到真后端而不是悄悄给假数据。
+`.env.local` 优先级高于代码缺省值，排查数据来源时先看它在不在。
 
 拦截发生在 `request()` 这一层，`src/api/endpoints.ts` 里的调用代码两种模式下完全一致。
 实时事件同样跟着切：mock 模式用进程内 event bus，真后端用 SSE（`src/realtime/adapters.ts`）。
@@ -94,5 +101,7 @@ mock 后端也按同一份形状返回。原先按 `docs/frontend-design.md` §7
   自动重试的倒计时目前由前端自己算。
 - 轮询降级（`src/realtime/adapters.ts`）合成的 `task.succeeded` 只带 `asset_id`，
   契约要求 `assets: Asset[]` + 可选 `actual_cost`。SSE 正常时走的是真事件，不受影响。
-- `GET /assets` 契约没有 `total`，前端列表头读了一个；真后端下这个计数会是空。
+- `GET /assets` 契约没有 `total`，资产库列表头改成报「已加载条数」，游标见底时它才等于总数。
+- `Card.title` 后端 Card 结构里没有，提交后会被丢弃；渲染一律走 `src/canvas/cardTitle.ts`
+  按 `kind` 兜底。`Card.history` 后端可能整个字段不返回，读长度前必须判空。
 

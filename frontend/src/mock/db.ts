@@ -132,7 +132,7 @@ function videoAsset(seed: string, prompt: string, minutesAgo: number): Asset {
 /** 资产没有 size 字段，mock 里按像素/时长估一个，够存储页有数可看 */
 export function assetBytes(asset: Asset): number {
   if (asset.type === 'video') return Math.round((asset.duration_seconds ?? 5) * 1.8 * 1024 ** 2);
-  return Math.round((asset.width * asset.height) / 4);
+  return Math.round(((asset.width ?? 512) * (asset.height ?? 512)) / 4);
 }
 
 /**
@@ -342,7 +342,7 @@ function seed(): MockDb {
           x: 60, y: 96, w: 220, h: 140, z: 1,
           title: '剧本',
           text: '深夜 23:47，便利店只剩收银员一人。门铃响起，进来一个浑身湿透的男人……',
-          refs: [], history: [], auto_placed: true, created_at: Date.now() - 900_000,
+          refs: [], history: [], auto_placed: true, created_at: iso(15),
         },
         {
           id: shot1,
@@ -356,31 +356,31 @@ function seed(): MockDb {
           refs: [scriptCardId],
           history: [],
           auto_placed: true,
-          created_at: Date.now() - 800_000,
+          created_at: iso(13),
         },
         {
           id: 'cd_3', kind: 'image', x: 620, y: 96, w: 240, h: 160, z: 3,
           title: '分镜 2', asset_id: assets[2].id,
           model_id: assets[2].source.model_id, prompt: assets[2].source.prompt, params: assets[2].source.params,
-          refs: [scriptCardId], history: [], auto_placed: true, created_at: Date.now() - 700_000,
+          refs: [scriptCardId], history: [], auto_placed: true, created_at: iso(12),
         },
         {
           id: 'cd_4', kind: 'text', x: 60, y: 328, w: 220, h: 140, z: 4,
           title: '分镜脚本',
           text: '1. 全景，店内冷光\n2. 特写，雨水滴落\n3. 过肩，男人递出纸条',
-          refs: [], history: [], auto_placed: true, created_at: Date.now() - 600_000,
+          refs: [], history: [], auto_placed: true, created_at: iso(10),
         },
         {
           id: 'cd_5', kind: 'image', x: 340, y: 328, w: 240, h: 160, z: 5,
           title: '分镜 3', asset_id: assets[4].id,
           model_id: assets[4].source.model_id, prompt: assets[4].source.prompt, params: assets[4].source.params,
-          refs: [shot1], history: [], auto_placed: true, created_at: Date.now() - 500_000,
+          refs: [shot1], history: [], auto_placed: true, created_at: iso(8),
         },
         {
           id: 'cd_6', kind: 'video', x: 620, y: 328, w: 240, h: 160, z: 6,
           title: '视频 1', asset_id: assets[1].id,
           model_id: assets[1].source.model_id, prompt: assets[1].source.prompt, params: assets[1].source.params,
-          refs: [shot1], history: [], auto_placed: true, created_at: Date.now() - 400_000,
+          refs: [shot1], history: [], auto_placed: true, created_at: iso(7),
         },
       ],
       conversation: [

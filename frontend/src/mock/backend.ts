@@ -125,7 +125,7 @@ function makeAssets(task: Task, model: ModelCapabilitySchema): Asset[] {
           model_name: model.name,
           prompt: task.prompt,
           params: task.params,
-          input_asset_ids: Object.values(task.inputs).flat(),
+          input_asset_ids: Object.values(task.inputs ?? {}).flat(),
         },
       };
     }
@@ -144,7 +144,7 @@ function makeAssets(task: Task, model: ModelCapabilitySchema): Asset[] {
         model_name: model.name,
         prompt: task.prompt,
         params: task.params,
-        input_asset_ids: Object.values(task.inputs).flat(),
+        input_asset_ids: Object.values(task.inputs ?? {}).flat(),
       },
     };
   });
@@ -584,7 +584,7 @@ const WINDOW_MINUTES: Record<string, number> = { '1h': 60, '24h': 60 * 24, '7d':
 
 /** 资产没有被任何任务引用 = 孤儿文件，清理页要能先看到再动手 */
 function orphanAssets(): Asset[] {
-  const referenced = new Set(db.tasks.flatMap((t) => t.assets.map((a) => a.id)));
+  const referenced = new Set(db.tasks.flatMap((t) => (t.assets ?? []).map((a) => a.id)));
   return db.assets.filter((a) => !referenced.has(a.id));
 }
 

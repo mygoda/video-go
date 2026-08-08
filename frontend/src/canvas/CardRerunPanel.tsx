@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { CanvasCard } from '@/api/types';
+import { cardTitle } from './cardTitle';
 import type { FormValues } from '@/schema/evaluate';
 import { useModels } from '@/api/queries';
 import { adoptValues } from '@/schema/migrate';
@@ -64,7 +65,7 @@ export function CardRerunPanel({ projectId, card, onClose, onSubmitted }: CardRe
 
   return (
     <div className="popover" style={{ position: 'absolute', left: 'var(--space-4)', top: 'var(--space-4)', width: 520 }}>
-      <div className="popover-title">重跑 · {card.title}</div>
+      <div className="popover-title">重跑 · {cardTitle(card)}</div>
       <div style={{ padding: 'var(--space-2)' }}>
         <label className="sr-only" htmlFor="rerun-prompt">
           提示词

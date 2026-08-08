@@ -52,7 +52,8 @@ export function useAssetActions() {
         kind: asset.type,
         ...autoPlace(state.cards.length),
         w: 280,
-        h: Math.round((280 * asset.height) / Math.max(asset.width, 1)),
+        // 尺寸未知时按 4:3 给个占位高度，别把卡片算成 0 高
+        h: asset.width && asset.height ? Math.round((280 * asset.height) / asset.width) : 210,
         z: state.cards.length + 1,
         asset_id: asset.id,
         title: asset.source.model_name,
@@ -62,7 +63,7 @@ export function useAssetActions() {
         refs: [],
         history: [],
         auto_placed: true,
-        created_at: Date.now(),
+        created_at: new Date().toISOString(),
       };
       await api.patchCanvas(project.id, state.revision, [{ type: 'card.create', card }]);
       await qc.invalidateQueries({ queryKey: qk.canvas(project.id) });

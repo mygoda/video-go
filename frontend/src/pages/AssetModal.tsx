@@ -49,7 +49,7 @@ export function AssetModal({ standalone }: { standalone?: boolean }) {
       </div>
       <div className="modal-side">
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-          <h2 style={{ margin: 0, fontSize: 'var(--text-md)' }}>{asset.source.model_name}</h2>
+          <h2 style={{ margin: 0, fontSize: 'var(--text-md)' }}>{asset.source.model_name ?? asset.source.model_id}</h2>
           <button ref={closeRef} type="button" className="icon-btn" aria-label="关闭" style={{ marginLeft: 'auto', position: 'static' }} onClick={close}>
             ×
           </button>
@@ -64,12 +64,14 @@ export function AssetModal({ standalone }: { standalone?: boolean }) {
               <span className="v mono">{String(v)}</span>
             </div>
           ))}
-          <div className="kv">
-            <span className="k">尺寸</span>
-            <span className="v mono">
-              {asset.width}×{asset.height}
-            </span>
-          </div>
+          {asset.width && asset.height && (
+            <div className="kv">
+              <span className="k">尺寸</span>
+              <span className="v mono">
+                {asset.width}×{asset.height}
+              </span>
+            </div>
+          )}
         </div>
 
         <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', marginTop: 'auto' }}>
