@@ -14,7 +14,9 @@ services:
       MYSQL_USER: aigc
       MYSQL_PASSWORD: devpass
     ports:
-      - "3306:3306"
+      # 宿主机侧一律 >= 10000（见根 README「本地端口规范」）；容器内仍是标准 3306。
+      # 改这里要同步改 .env 里 AIGC_MYSQL_DSN 的端口，否则服务连不上库。
+      - "13306:3306"
     volumes:
       - aigc-mysql-data:/var/lib/mysql
     healthcheck:

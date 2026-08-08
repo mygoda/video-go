@@ -79,6 +79,52 @@ make run          # 起 HTTP 服务与 worker 池
 **这两个默认口令仅供本机开发。** 任何对外可达的部署都必须先设好这两个环境变量再 seed。
 重复跑 `make seed` 不会覆盖已存在账号的口令。
 
+## 本地端口规范
+
+**三条硬规矩，对本仓库所有进程生效：**
+
+1. **禁用 8080。** 任何监听都不许落在 8080 上。
+2. **所有监听端口 >= 10000。**
+3. **端口被占必须响亮地失败**，不许静默退化、不许自动漂到别的端口。
+
+| 进程 | 端口 | 怎么改 |
+|---|---|---|
+| 后端 HTTP | `18080`（`AIGC_HTTP_ADDR` 缺省值） | `AIGC_HTTP_ADDR=:18081 make run` |
+| 前端 dev server | `15173`（`frontend/vite.config.ts`，`strictPort`） | `npm run dev -- --port 15174` |
+| 前端代理指向的后端 | `http://localhost:18080` | `frontend/.env.local` 里写 `VITE_API_PROXY_TARGET=` |
+| 本地 MySQL（宿主机映射） | `13306`（容器内仍是 `3306`） | 改 `docker-compose.yml`，并同步 `.env` 里 `AIGC_MYSQL_DSN` 的端口 |
+
+改后端端口时记得把前端代理目标一起改，两边对不上会整页 502。
+
+### 为什么有这条规矩
+
+2026-08-08 凌晨出过一次**持续 5.5 小时的静默中断**，根因就是 8080 冲突：
+
+一个 `aigcd serve` 绑在 IPv6 的 `*:8080` 上，而同机另一个服务只发布在
+IPv4 `127.0.0.1:8080`。macOS 上 `localhost` 优先解析到 `::1`，于是所有
+`localhost:8080` 的请求都被 aigcd 接管，对每条不认识的路由返回 Go 默认的
+`404 page not found`。
+
+**表现极具迷惑性**：走 WebSocket 的心跳仍然显示「在线」，本地任务照常跑完，
+只有 HTTP 回传全废——活干完了，服务端永远不知道。直到 5.5 小时后才被人发现。
+
+所以规矩不是洁癖，是这次事故的直接对策，并且已经写成了代码约束而不只是文档约定：
+
+- `internal/config` 在启动时校验 `AIGC_HTTP_ADDR`，端口 < 10000（含 8080）**直接拒绝启动**
+- `aigcd serve` 在连库、起 worker **之前**就先抢监听口，被占时报出占用端口、
+  查凶手的 `lsof` 命令和换端口的办法，然后退出
+- 前端 dev server 开了 `strictPort`，端口被占直接失败，不会 +1 漂走
+
+### 已知例外
+
+`migrations/` 下**已经 apply 的迁移文件是不可变历史，不原地修改**。
+`migrations/000002_seed_reference_data.up.sql` 里 mock provider 的 `base_url`
+仍写着 `http://localhost:8080/__mock`——那是一条惰性数据：`internal/adapter/mock/`
+根本不发 HTTP，也从不读 `Provider.BaseURL`（只有 `googlelro` / `openaivideo` /
+`openaicompat` 三个真 driver 读它），它只是为了让 mock 与真实供应商保持相同的配置形态。
+**「全仓 grep 不到 8080」这条验收标准排除 `migrations/` 下已 apply 的文件**，
+不必再纠结一遍。
+
 ## 前端
 
 前端是独立的 Vite + React 应用，源码在 `frontend/`，详见 [`frontend/README.md`](frontend/README.md)。
@@ -86,23 +132,11 @@ make run          # 起 HTTP 服务与 worker 池
 ```bash
 cd frontend
 npm install       # 用 npm，仓库里是 package-lock.json
-npm run dev       # http://localhost:5173
+npm run dev       # http://localhost:15173
 ```
 
 **默认直连真后端**，所以先按上面「从零跑起来」把后端起起来。前端请求同源 `/api`，
 由 dev server 代理到后端，避开 CORS 与 SSE 缓冲。
-
-### 端口
-
-| 进程 | 端口 | 怎么改 |
-|---|---|---|
-| 后端 | `:8080`（`AIGC_HTTP_ADDR` 缺省值） | `AIGC_HTTP_ADDR=:18080 make run` |
-| 前端 dev server | `5173` | `npm run dev -- --port 15173` |
-| 前端代理指向的后端 | `http://localhost:18080` | `frontend/.env.local` 里写 `VITE_API_PROXY_TARGET=` |
-
-代理默认指向 **18080** 而后端默认监听 **8080**，两边对不上就会整页 502。二选一：
-起后端时带上 `AIGC_HTTP_ADDR=:18080`，或者在 `frontend/.env.local` 里把
-`VITE_API_PROXY_TARGET` 指回 `http://localhost:8080`。
 
 ### 离线开发模式（VITE_USE_MOCK）
 

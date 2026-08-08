@@ -7,7 +7,7 @@
 // 是因为 SSE 要真的当流读、边读边断言，curl 做不到。
 //
 // 用法：先 `make run`，再 `go run ./scripts/smoke`。
-// 目标地址取 AIGC_SMOKE_BASE_URL，默认 http://localhost:8080。
+// 目标地址取 AIGC_SMOKE_BASE_URL，默认 http://localhost:18080。
 package main
 
 import (
@@ -32,7 +32,7 @@ func main() {
 	fmt.Println("\n\033[32mSMOKE PASSED\033[0m")
 }
 
-var baseURL = envOr("AIGC_SMOKE_BASE_URL", "http://localhost:8080")
+var baseURL = envOr("AIGC_SMOKE_BASE_URL", "http://localhost:18080")
 
 func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

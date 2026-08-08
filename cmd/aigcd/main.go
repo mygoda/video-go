@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -80,6 +81,36 @@ func mustAtoi(args []string, def int) (int, error) {
 	return n, nil
 }
 
+// listenHTTP 占住监听地址，端口被占时给出一条能直接照着做的错误。
+//
+// 静默失败是这条代码路径上最贵的失败：端口被别人占着而我们一声不吭地退化，
+// 表现是「服务看起来活着，但所有请求都落到另一个进程」——2026-08-08 的
+// 5.5 小时静默中断正是这么来的。所以这里宁可吵，也不能含糊。
+func listenHTTP(addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		return ln, nil
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return nil, fmt.Errorf(
+			"port %s is already in use — another process is listening there.\n"+
+				"  find it:      lsof -nP -iTCP:%s -sTCP:LISTEN\n"+
+				"  or move on:   %sHTTP_ADDR=:<free port >= %d> aigcd serve\n"+
+				"  if you move the backend, point the frontend proxy at it too "+
+				"(frontend/.env.local: VITE_API_PROXY_TARGET)",
+			addr, portOf(addr), config.Prefix, config.MinPort)
+	}
+	return nil, fmt.Errorf("listen on %s: %w", addr, err)
+}
+
+// portOf 从监听地址里取端口，取不到就原样返回，仅用于拼错误信息。
+func portOf(addr string) string {
+	if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+		return port
+	}
+	return addr
+}
+
 // run 承载真正的启动逻辑。
 //
 // 与直接写在 main 里相比，它能用 return err 表达失败，让 os.Exit 只出现在
@@ -93,8 +124,18 @@ func run() error {
 	}
 	logger.Info("configuration loaded", "config", cfg.Redacted())
 
+	// 先抢监听口，再连库起 worker。顺序反过来的话，端口被占的进程会先把库连上、
+	// 把 worker 拉起来，直到最后一步才失败退出，中间那段时间它已经在抢任务了。
+	// 用显式 net.Listen 而不是 srv.ListenAndServe，也顺带消掉了「先探测再监听」
+	// 之间的竞态窗口。
+	ln, err := listenHTTP(cfg.HTTPAddr)
+	if err != nil {
+		return err
+	}
+
 	app, err := build(cfg)
 	if err != nil {
+		_ = ln.Close()
 		return err
 	}
 
@@ -108,6 +149,7 @@ func run() error {
 	defer stop()
 
 	if err := app.start(ctx); err != nil {
+		_ = ln.Close()
 		app.stop(context.Background())
 		return err
 	}
@@ -125,8 +167,8 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("http server listening", "addr", cfg.HTTPAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Info("http server listening", "addr", ln.Addr().String())
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("http server: %w", err)
 			return
 		}
@@ -135,7 +177,6 @@ func run() error {
 
 	select {
 	case err := <-errCh:
-		// 监听失败（如端口被占）在这里立刻返回，不必等信号。
 		app.stop(context.Background())
 		return err
 	case <-ctx.Done():

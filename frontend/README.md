@@ -8,13 +8,18 @@ Vite + React 18 + TypeScript(strict) 的单页应用。实现 `docs/frontend-des
 ```bash
 cd frontend
 npm install
-npm run dev                  # http://localhost:5173
+npm run dev                  # http://localhost:15173
 ```
 
 **默认直连真后端**，先按项目根 README 把后端起起来（代理默认指向
-`http://localhost:18080`，端口对不上见根 README「前端 · 端口」）。
+`http://localhost:18080`，端口对不上见根 README「本地端口规范」）。
 打开后默认落在 `/create/image`，用种子账号 **demo / user-dev-only** 登录，
 或者直接注册一个新账号。
+
+dev server 固定监听 **15173**（`vite.config.ts` 里开了 `strictPort`）：端口被占时
+直接失败退出，不会像 Vite 默认那样 +1 漂到别的端口。漂走最坑的地方在于浏览器里
+那个还开着的旧页面仍指向原端口，看起来一切正常，实际调的是另一个进程。
+本仓库所有监听端口必须 >= 10000、禁用 8080，来龙去脉见根 README「本地端口规范」。
 
 后端没起、只想调界面时再开离线 mock：`cp .env.example .env.local`，
 把里面的 `VITE_USE_MOCK=true` 取消注释。

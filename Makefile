@@ -18,7 +18,7 @@ test:
 
 # smoke 打的是另一台已经在跑的服务，因此不依赖任何本地目标：
 # 先在一个终端 make run，再在另一个终端 make smoke。
-# 目标地址取 AIGC_SMOKE_BASE_URL，默认 http://localhost:8080。
+# 目标地址取 AIGC_SMOKE_BASE_URL，默认 http://localhost:18080。
 smoke:
 	go run ./scripts/smoke
 

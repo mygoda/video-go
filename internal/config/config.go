@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -29,7 +30,7 @@ const Prefix = "AIGC_"
 // 默认值。凡是有合理默认的都给默认，只有凭证与 DSN 没有默认——
 // 那两样猜错了不如不猜。
 const (
-	DefaultHTTPAddr        = ":8080"
+	DefaultHTTPAddr        = ":18080"
 	DefaultShutdownTimeout = 15 * time.Second
 	DefaultReadTimeout     = 30 * time.Second
 	// DefaultWriteTimeout 为 0 表示不限制写超时。这是 SSE 长连接的硬要求：
@@ -37,7 +38,7 @@ const (
 	DefaultWriteTimeout      = time.Duration(0)
 	DefaultIdleTimeout       = 120 * time.Second
 	DefaultStorageRoot       = "./data/storage"
-	DefaultPublicBaseURL     = "http://localhost:8080"
+	DefaultPublicBaseURL     = "http://localhost:18080"
 	DefaultCORSOrigins       = "*"
 	DefaultJWTSecretEnv      = "AIGC_JWT_SECRET"
 	DefaultJWTTTL            = 720 * time.Hour
@@ -45,9 +46,21 @@ const (
 	DefaultPollInterval      = 12 * time.Second
 )
 
+// MinPort 是本地端口规范的下界：本项目所有监听端口必须 >= 10000。
+//
+// 这不是洁癖，是一次事故的对策。2026-08-08 凌晨一个 aigcd 绑在 IPv6 的 *:8080 上，
+// 而同机另一个只发布在 IPv4 127.0.0.1:8080 的服务被它静默接管——macOS 上 localhost
+// 优先解析到 ::1，于是所有 localhost:8080 请求都落到 aigcd 手里，对每条路由返回
+// 404，持续 5.5 小时才被发现。把默认端口抬到万位以上，是为了让本项目不再有机会
+// 撞进别人的端口里。
+const MinPort = 10000
+
+// ErrPortPolicy 供调用方用 errors.Is 判定「端口不符合本地端口规范」。
+var ErrPortPolicy = errors.New("config: listen port violates the local port policy")
+
 // Config 是进程的全部配置。
 type Config struct {
-	// HTTPAddr 是 HTTP 监听地址，形如 ":8080"。
+	// HTTPAddr 是 HTTP 监听地址，形如 ":18080"。端口受 MinPort 约束，见 validateHTTPAddr。
 	HTTPAddr string
 	// ShutdownTimeout 是收到终止信号后等待在途请求结束的上限。
 	ShutdownTimeout time.Duration
@@ -99,6 +112,10 @@ func Load() (*Config, error) {
 		StorageRoot:   envString("STORAGE_ROOT", DefaultStorageRoot),
 		PublicBaseURL: strings.TrimRight(envString("PUBLIC_BASE_URL", DefaultPublicBaseURL), "/"),
 		CORSOrigins:   splitCSV(envString("CORS_ORIGINS", DefaultCORSOrigins)),
+	}
+
+	if err := validateHTTPAddr(cfg.HTTPAddr); err != nil {
+		return nil, err
 	}
 
 	var err error
@@ -165,6 +182,31 @@ func (c *Config) Redacted() map[string]string {
 		"worker_concurrency": strconv.Itoa(c.WorkerConcurrency),
 		"poll_interval":      c.PollInterval.String(),
 	}
+}
+
+// validateHTTPAddr 把本地端口规范变成启动时的硬约束：端口必须显式给出，
+// 且必须 >= MinPort。配成 8080 这类低位端口时直接拒绝启动，而不是留一条
+// 注释在文档里等人自觉。
+func validateHTTPAddr(addr string) error {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("config: %sHTTP_ADDR is not a valid listen address (%q), want something like %q: %w",
+			Prefix, addr, DefaultHTTPAddr, err)
+	}
+	// 端口留空会让内核随机分配，进程实际听在哪没人知道，前端代理也就配不出来。
+	if portStr == "" {
+		return fmt.Errorf("%w: %sHTTP_ADDR (%q) must name an explicit port, want something like %q",
+			ErrPortPolicy, Prefix, addr, DefaultHTTPAddr)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return fmt.Errorf("config: %sHTTP_ADDR port is not a number (%q)", Prefix, portStr)
+	}
+	if port < MinPort {
+		return fmt.Errorf("%w: %sHTTP_ADDR (%q) uses port %d, but this project requires >= %d; use %q instead",
+			ErrPortPolicy, Prefix, addr, port, MinPort, DefaultHTTPAddr)
+	}
+	return nil
 }
 
 // envString 读取一个带前缀的字符串变量，未设置或为空时返回 def。

@@ -30,7 +30,7 @@ info:
     没传就是文生图，由后端按输入槽是否为空路由。前端不参与这个判断。
 
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:18080
     description: 本地开发（本阶段不部署）
 
 tags:
