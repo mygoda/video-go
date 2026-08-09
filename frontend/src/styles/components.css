@@ -502,9 +502,13 @@ a { color: inherit; text-decoration: none; }
   z-index: var(--z-dock); overflow-y: auto;
 }
 .compose-head {
-  display: flex; align-items: center; gap: var(--space-2);
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
   font-size: var(--text-xs); color: var(--text-secondary);
 }
+.compose-head strong { flex: none; white-space: nowrap; }
+/* 标题＋按钮先占满一行，说明文字换到第二行：360px 的坞宽塞不下三者同排，
+   不给 order 的话「合成成片」会被从中间拆断 */
+.compose-head .sub { order: 3; flex-basis: 100%; color: var(--text-tertiary); }
 .compose-result { display: flex; flex-direction: column; gap: var(--space-2); }
 .compose-picks {
   margin: 0; padding: 0; list-style: none;
