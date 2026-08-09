@@ -17,6 +17,7 @@ import (
 	"github.com/aigc-pool/aigc-pool/internal/adapter/mock"
 	"github.com/aigc-pool/aigc-pool/internal/adapter/openaicompat"
 	"github.com/aigc-pool/aigc-pool/internal/adapter/openaivideo"
+	"github.com/aigc-pool/aigc-pool/internal/adapter/predictions"
 	"github.com/aigc-pool/aigc-pool/internal/asset"
 	"github.com/aigc-pool/aigc-pool/internal/canvas"
 	"github.com/aigc-pool/aigc-pool/internal/capability"
@@ -205,6 +206,13 @@ func registerDrivers(renderer mapping.Renderer, cfg *config.Config) adapter.Regi
 	mut.MustRegister(ark.New(ark.Driver{HTTP: client, Renderer: renderer}))
 	mut.MustRegister(openaivideo.New(openaivideo.Driver{HTTP: client, Renderer: renderer}))
 	mut.MustRegister(googlelro.New(googlelro.Driver{HTTP: client, Renderer: renderer}))
+
+	// predictions 是同一个协议的两个实例，共用 "predictions" 这一个查找键：
+	// 出图走同步那个（一次往返约 10 秒），出视频走异步那个（约 256 秒）。
+	// 与 mock 同形，靠 Family() 与模型配置里的 protocol_family 对齐选边。
+	predCfg := predictions.Driver{HTTP: client, Renderer: renderer}
+	mut.MustRegister(predictions.NewSyncDriver(predCfg))
+	mut.MustRegister(predictions.NewAsyncDriver(predCfg))
 
 	// compose 不出网：它把一组已有产物按顺序编成一份清单。它仍然出现在这里，
 	// 是因为进入任务链路（状态机、转存、退款、SSE）的唯一入口就是驱动注册表。

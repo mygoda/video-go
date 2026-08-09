@@ -21,19 +21,24 @@ const (
 // 「一键合成」要的是一条**真任务**——任务表、状态机、退款、SSE、任务监控
 // 一样不能少，而那条链路的入口只有 driver 一个。等到真正能拼视频的上游
 // （或本地转码服务）接进来时，换掉的只是这一个 driver。
+//
+// predictions 是模型市场族（Replicate 风格 POST /predictions）的**同步**一侧，
+// 出图走它。同一个协议的异步一侧挂在 VideoProtocolPredictions 上，出视频走那边——
+// 两侧共用 "predictions" 这一个查找键，靠 Family() 与本列对齐来选边（见 adapter.IsAsync）。
 type ProtocolFamily string
 
 const (
-	FamilyChat    ProtocolFamily = "chat"
-	FamilyImages  ProtocolFamily = "images"
-	FamilyVideo   ProtocolFamily = "video"
-	FamilyMock    ProtocolFamily = "mock"
-	FamilyCompose ProtocolFamily = "compose"
+	FamilyChat        ProtocolFamily = "chat"
+	FamilyImages      ProtocolFamily = "images"
+	FamilyVideo       ProtocolFamily = "video"
+	FamilyMock        ProtocolFamily = "mock"
+	FamilyCompose     ProtocolFamily = "compose"
+	FamilyPredictions ProtocolFamily = "predictions"
 )
 
 // VideoProtocol 是视频族的具体协议。
 //
-// 三家供应商在**提交端点、轮询寻址、状态枚举、产物取法**四个维度上全不同，
+// 四家供应商在**提交端点、轮询寻址、状态枚举、产物取法**四个维度上全不同，
 // 因此不能用一套 URL 模板硬套——这就是 L0 driver 必须按协议分包的原因。
 // 差异的具体内容见各 driver 包的包注释。
 type VideoProtocol string
@@ -43,6 +48,7 @@ const (
 	VideoProtocolOpenAIVideo VideoProtocol = "openai_video"
 	VideoProtocolGoogleLRO   VideoProtocol = "google_lro"
 	VideoProtocolMock        VideoProtocol = "mock"
+	VideoProtocolPredictions VideoProtocol = "predictions"
 )
 
 // AuthStyle 是凭证注入上游请求的方式。Ark 与 OpenAI 一致都是 bearer，

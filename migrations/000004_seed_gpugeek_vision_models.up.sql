@@ -12,14 +12,16 @@
 -- 2026-08-09 复核实测（DEM-76）：给 qwen3-omni-flash / qwen-omni-turbo /
 -- qwen-vl-max / Gemini-3.1-pro / Doubao-Seed-1.6 传 modalities=["text","image"]
 -- 与 ["text","audio"]，五个模型一律回 object=chat.completion 且只有 content
--- 文本，没有 images / audio 字段——该参数被网关静默忽略。**本 key 能调到的
--- 模型里没有任何一个能输出图像或视频**，多模态仅指输入侧。平台主线的
--- 文生图 / 文生视频因此仍然是 mock。把这批模型说成「已接入真实 AIGC 上游」
--- 会让验收看错东西。
+-- 文本，没有 images / audio 字段——该参数被网关静默忽略。**这批模型的多模态
+-- 仅指输入侧**，把它们说成「已接入真实 AIGC 上游」会让验收看错东西。
 --
--- 注：早先此处写的「GPUGeek 网关对 /v1/images/generations 回 method not
--- supported，它只代理 chat/completions」是错的——通用端点是 /predictions，
--- 且真正的卡点是账号未开通生成类模型。详见 000003 头部的复核说明。
+-- ⚠️ 但本段早先由此推出的两句结论都是错的，已被 DEM-77 推翻：
+--   ✗「本 key 能调到的模型里没有任何一个能输出图像或视频」
+--   ✗「平台主线的文生图 / 文生视频因此仍然是 mock」
+-- 错在把 /v1/* 这一层的观测当成了整个平台的结论。GPUGeek 的生成模型全在
+-- **另一套 API 面**（POST /predictions）上，2026-08-09 用同一把 key 实测跑通
+-- 了文生图与文生视频。/v1/images/generations 回 404 也只说明生成类模型不走
+-- 那条路。接法见 000007_predictions_generation_models.up.sql。
 --
 -- ── 为什么图必须内联（inline: true）─────────────────────────────────────
 -- 上游拉不到本平台的素材地址：给远程 URL 实测回 `400 Timeout while

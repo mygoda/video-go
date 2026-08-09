@@ -169,7 +169,8 @@ func (r *modelRepo) Upsert(ctx context.Context, m domain.ModelConfig) (domain.Mo
 		return domain.ModelConfig{}, err
 	}
 	switch m.Family {
-	case domain.FamilyChat, domain.FamilyImages, domain.FamilyVideo, domain.FamilyMock, domain.FamilyCompose:
+	case domain.FamilyChat, domain.FamilyImages, domain.FamilyVideo, domain.FamilyMock,
+		domain.FamilyCompose, domain.FamilyPredictions:
 	default:
 		return domain.ModelConfig{}, invalidParam("unknown protocol family " + string(m.Family))
 	}

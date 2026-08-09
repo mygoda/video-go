@@ -1,23 +1,28 @@
 -- =============================================================================
 -- 000003_seed_gpugeek_provider.up.sql
 --
--- 接入 GPUGeek 作为第一个**真实**供应商，只接 chat 家族。
+-- 接入 GPUGeek 作为第一个**真实**供应商，本迁移只接 chat 家族。
 --
--- 为什么只有 chat：GPUGeek 的 /v1/models 返回 101 个模型（本 key 可见的全部），
--- 全部是 LLM / 视觉理解，没有任何文生图、文生视频模型。因此图像与视频继续走
--- mock，接一个当前 key 调不通的模型只会把失败推迟到用户提交任务的那一刻。
+-- ⚠️ 本段早先写着「GPUGeek 没有任何文生图 / 文生视频模型，所以图像与视频继续
+-- 走 mock」。**这个结论是错的**，经两轮复核已被推翻，保留原文只会误导后来人：
 --
--- ⚠️ 2026-08-09 复核，修正本段早先的两处错误推断（DEM-76）：
---   1) GPUGeek 不是「只代理 chat/completions」。通用调用端点是
---      POST /predictions（Replicate 风格 {"model","input"}，实测 200），
---      /v1/* 只是额外的 OpenAI 兼容层。早先只探 /v1/* 就下结论，探漏了。
---   2)「模型不存在或无权限」不是模型层面的证据，它是 api.gpugeek.com 对
---      **任意未知路径**的兜底 404 文案（拿 /v1/definitely-not-a-real-endpoint
---      实测同样回这句）。「模型不在注册表」的文案是 "<model> is not found"。
--- 两句文案在 /predictions 上可稳定区分：GpuGeek/FLUX.1-dev 与
--- GpuGeek/FLUX.1-Kontext-dev 回「模型不存在或无权限」= 平台有、本 key 无权限；
--- 其余几十个图/视频模型名回 "... is not found" = 注册表里确实没有。
--- 即：**卡点是账号权限，不是平台没有生成能力**。开通前结论不变，仍走 mock。
+--   DEM-76（2026-08-09）：那个结论只探了 /v1/models、/v1/chat/completions
+--   这一层就下了判断，而 GPUGeek 有**两套互不相通的 API 面**——/v1/* 只是额外
+--   的 OpenAI 兼容层，通用调用端点是 POST /predictions（Replicate 风格
+--   {"model","input"}）。另外，「模型不存在或无权限」不是模型层面的证据，
+--   它是 api.gpugeek.com 对**任意未知路径**的兜底 404 文案
+--   （/v1/definitely-not-a-real-endpoint 实测同样回这句）。
+--
+--   DEM-77（2026-08-09）：同一把 key 在 POST /predictions 上**实测跑通了
+--   文生图与文生视频**，产物已落地——所以连 DEM-76 那句「卡点是账号权限、
+--   开通前仍走 mock」也不成立。生成能力从来就在，只是不在 /v1/* 那条路上：
+--     Volcengine/Doubao-Seedream-4.5   约 10 秒出一张 2048×2048 JPEG
+--     Volcengine/Doubao-Seedance-2.0   约 256 秒出一段 mp4
+--   接法见 000007_predictions_generation_models.up.sql 与
+--   internal/adapter/predictions。
+--
+-- 本迁移只接 chat 的**真实**理由因此只剩一条：它是第一条真实链路，
+-- 生成模型是后一条迁移的事，与这里的三个文本模型互不影响。
 --
 -- 为什么不写新 driver：GPUGeek 走标准 OpenAI 兼容协议，
 -- internal/adapter/openaicompat 的 chat 分支与 PathChatCompletions 逐字匹配。
