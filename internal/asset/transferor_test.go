@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"log/slog"
@@ -397,5 +398,53 @@ func TestTransferKeepsUpstreamImageSize(t *testing.T) {
 	}
 	if a.Width == nil || *a.Width != 1024 || a.Height == nil || *a.Height != 768 {
 		t.Fatalf("上游报的宽高应原样保留，实际 %v x %v", a.Width, a.Height)
+	}
+}
+
+// jpegWithBulkyMetadata 造一张 SOF 段被推到 N×64KB 之后的 JPEG：在 SOI 之后
+// 插几段填满长度上限的 APP2，正是 ICC/EXIF 在真实产物里的位置与体量。
+func jpegWithBulkyMetadata(t *testing.T, w, h, segments int) string {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, w, h)), nil); err != nil {
+		t.Fatalf("造测试图: %v", err)
+	}
+	raw := buf.Bytes()
+
+	var out bytes.Buffer
+	out.Write(raw[:2]) // SOI
+	for i := 0; i < segments; i++ {
+		const size = 0xFFFF // 段长度字段的上限，含长度字段自身的 2 字节
+		out.Write([]byte{0xFF, 0xE2, byte(size >> 8), byte(size & 0xFF)})
+		out.Write(make([]byte, size-2))
+	}
+	out.Write(raw[2:])
+	return out.String()
+}
+
+// TestTransferBackfillsImageSizeBehindLargeMetadata 守的是一次真实的翻车：
+// 补宽高的第一版只读文件头前 64KB，而 GPUGeek 回的 JPEG 把 120KB 的 ICC/EXIF
+// 排在 SOF 前面，于是每一张真图的宽高都补不出来，日志里只留一行 unexpected EOF。
+//
+// 断言必须用"元数据比任何固定窗口都大"的图，否则换成读 N 字节的实现照样绿。
+func TestTransferBackfillsImageSizeBehindLargeMetadata(t *testing.T) {
+	ctx := context.Background()
+	body := jpegWithBulkyMetadata(t, 11, 5, 3) // SOF 被推到 192KB 之后
+
+	ra := &recordingAssets{}
+	drv := &artifactDriver{bodies: map[string]string{"a": body}}
+	tr, _ := newTestTransferor(t, ra, nil, drv)
+
+	a, err := tr.Transfer(ctx, "u1", "task-1",
+		adapter.ArtifactRef{Kind: adapter.KindURL, Type: domain.AssetTypeImage, MIME: "image/jpeg", URL: "a"},
+		videoReq())
+	if err != nil {
+		t.Fatalf("Transfer: %v", err)
+	}
+	if a.Width == nil || a.Height == nil {
+		t.Fatal("元数据再长也得把宽高读出来，实际是空的")
+	}
+	if *a.Width != 11 || *a.Height != 5 {
+		t.Fatalf("宽高应为 11x5，实际 %dx%d", *a.Width, *a.Height)
 	}
 }
