@@ -103,6 +103,14 @@ export const api = {
       method: 'POST',
       body: { message, ref_card_ids, skill_id },
     }),
+
+  // card_ids 是**有序**的，顺序即成片里的片段顺序，后端不排序也不去歧义。
+  // client_token 由调用方给：断网重发拿回同一条任务，而不是又拼一次、又扣一次钱。
+  compose: (projectId: string, card_ids: string[], title: string, client_token: string) =>
+    request<CreateTaskResponse>(`/canvas/${projectId}/compose`, {
+      method: 'POST',
+      body: { card_ids, title, client_token },
+    }),
 };
 
 /** 管理后台。路由前缀固定 /admin，越权由后端返回 403，前端路由守卫只是第一道 */

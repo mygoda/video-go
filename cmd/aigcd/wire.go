@@ -110,6 +110,7 @@ func build(cfg *config.Config) (*app, error) {
 		Assets:              assets,
 		Uploads:             uploads,
 		Blobs:               blobs,
+		Canvas:              canvases,
 		Queue:               mysqlstore.NewQueue(db),
 		Drivers:             drivers,
 		Transferor:          transferor,
@@ -214,8 +215,10 @@ func registerDrivers(renderer mapping.Renderer, cfg *config.Config) adapter.Regi
 	mut.MustRegister(predictions.NewSyncDriver(predCfg))
 	mut.MustRegister(predictions.NewAsyncDriver(predCfg))
 
-	// compose 不出网：它把一组已有产物按顺序编成一份清单。它仍然出现在这里，
-	// 是因为进入任务链路（状态机、转存、退款、SSE）的唯一入口就是驱动注册表。
+	// compose 不出网：它用本机的 ffmpeg 把一组已有产物拼成一条 MP4。仍然
+	// 出现在这里，是因为进入任务链路（状态机、转存、退款、SSE）的唯一入口
+	// 就是驱动注册表。ffmpeg 不在 PATH 上时注册照样成功、提交合成时才失败——
+	// 为一个可能整天没人点的功能拒绝启动整个服务不成比例。
 	mut.MustRegister(compose.New(compose.Driver{}))
 
 	slog.Info("drivers registered", "names", reg.Names())

@@ -71,6 +71,10 @@ type Deps struct {
 	Assets store.AssetRepo
 	// Uploads 用于识别输入槽里的 upload_id。
 	Uploads store.UploadRepo
+	// Canvas 用于把任务产物回填到发起它的画布卡片上（见 publishCard）。
+	// 为 nil 时卡片只收到 SSE 通知、库里不落 asset_id——一键合成会因此
+	// 收不到片段，所以生产接线必须给。
+	Canvas store.CanvasRepo
 	// Blobs 供 request_mapping 里带 inline 的规则读素材原始字节。为 nil 时
 	// 只有那类模型会失败，走地址的模型不受影响。
 	Blobs asset.Store
@@ -489,10 +493,33 @@ func (s *Service) publishCredit(ctx context.Context, userID string) {
 	s.publish(ctx, stream.CreditUpdated(userID, bal))
 }
 
-// publishCard 在任务挂在画布上时同步卡片状态。
+// publishCard 在任务挂在画布上时同步卡片状态：先落库，再推事件。
+//
+// # 为什么必须落库，光推 SSE 不够
+//
+// canvas.card.updated 只是一条通知，前端收到后重新拉一次画布快照。快照是从
+// canvas_cards 读的——不落库，拉回来的还是那张 asset_id 为空的卡片，画面上
+// 骨架屏转完变回空白。更要命的是一键合成：它按 card.asset_id 收集片段，
+// 卡片没有 asset_id 就一律被判"还没有产出"，整条短剧链路走不到合成那一步。
+//
+// # 只在拿到产物时写
+//
+// 失败与取消也会走到这里，但它们的 assetID 是 nil。那时候把 asset_id 写成
+// NULL 会把重跑前那一版产物从卡片上抹掉——用户重跑失败，连原来的图也没了。
+// 失败态由 SSE 通知即可，卡片保留上一版。
+//
+// 落库失败不阻断收尾：任务已经成功、钱已经结算、产物已经在资产库里，
+// 为一次回填把这些回滚不了的事情判成失败没有意义。记日志，事件照发。
 func (s *Service) publishCard(ctx context.Context, t domain.Task, status domain.TaskStatus, assetID *string) {
 	if t.CanvasID == nil || t.CardID == nil {
 		return
+	}
+	if assetID != nil && s.deps.Canvas != nil {
+		if err := s.deps.Canvas.SetCardResult(
+			context.WithoutCancel(ctx), *t.CanvasID, *t.CardID, assetID); err != nil {
+			s.log.Warn("回填画布卡片产物失败，卡片上不会出现这次的产物",
+				"task_id", t.ID, "canvas_id", *t.CanvasID, "card_id", *t.CardID, "err", err)
+		}
 	}
 	s.publish(ctx, stream.CanvasCardUpdated(t.UserID, *t.CanvasID, *t.CardID, status, assetID))
 }

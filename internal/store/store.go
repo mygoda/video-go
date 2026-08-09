@@ -195,6 +195,16 @@ type CanvasRepo interface {
 	Snapshot(ctx context.Context, projectID string) (domain.CanvasSnapshot, error)
 	ApplyOps(ctx context.Context, projectID string, baseRevision int64, ops []domain.CanvasOp) (int64, error)
 	AppendMessage(ctx context.Context, m domain.Message) (domain.Message, error)
+	// SetCardResult 把任务产出的资产回填到卡片上，并推进 revision。
+	//
+	// 它绕开 ApplyOps 的 baseRevision 比对：回填的发起方是执行层，它手里
+	// 没有、也不该有客户端的那个 revision——读一个再写回去，就是拿用户此刻
+	// 正在平移画布的那次编辑跟自己抢锁，输了产物就永远回不到卡片上。
+	// 卡片在这里是被动接收结果，不是在跟谁竞争同一个字段。
+	//
+	// 卡片已被删除时静默成功：任务照样完成、产物照样进资产库，
+	// 只是没有卡片可回填了。
+	SetCardResult(ctx context.Context, projectID, cardID string, assetID *string) error
 }
 
 // SkillRepo 读写 Skill 记录。

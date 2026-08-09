@@ -396,6 +396,18 @@ a { color: inherit; text-decoration: none; }
   box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 .canvas-card.dimmed { opacity: .35; }
+/* 合成模式的入选态。用实心描边而不是 .selected 的辉光：合成时会同时有好几张
+   卡入选，辉光叠在一起画布会糊成一片 */
+.canvas-card.picked { border-color: var(--accent-text); box-shadow: 0 0 0 2px var(--accent-border); }
+/* 序号跟 .version-switch 同一套药丸样式，但落在右上角，避开左下的版本切换 */
+.pick-index {
+  position: absolute; right: var(--space-2); top: 32px;
+  min-width: 20px; height: 20px; padding: 0 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent); color: #fff;
+  border-radius: var(--radius-full); font-size: var(--text-2xs);
+  box-shadow: var(--shadow-card);
+}
 
 /* 卡片工具条属于**覆盖层**，不是卡片的子节点。
    卡片必须 overflow:hidden 才能让媒体吃到圆角，子节点放这里会被裁掉。
@@ -476,6 +488,38 @@ a { color: inherit; text-decoration: none; }
   color: var(--text-primary); font: inherit; font-size: var(--text-sm);
 }
 .dock-input input::placeholder { color: var(--text-tertiary); }
+
+/* 合成条占的是对话坞那个槽位（同一时刻只出现一个），所以外形与 .dock 一致，
+   只是内容是自上而下的一列而不是消息流 */
+.compose-bar {
+  position: absolute; right: var(--space-4); bottom: var(--space-4);
+  width: var(--w-dock); max-height: 480px;
+  display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-3);
+  background: rgba(27,27,34,.92); backdrop-filter: blur(16px);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl); box-shadow: var(--shadow-modal);
+  z-index: var(--z-dock); overflow-y: auto;
+}
+.compose-head {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-xs); color: var(--text-secondary);
+}
+.compose-result { display: flex; flex-direction: column; gap: var(--space-2); }
+.compose-picks {
+  margin: 0; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: var(--space-1);
+  font-size: var(--text-xs); color: var(--text-secondary);
+}
+.compose-picks li { display: flex; align-items: center; gap: var(--space-2); }
+.compose-picks li .mono {
+  width: 18px; height: 18px; flex: none;
+  display: grid; place-items: center;
+  background: var(--bg-active); border-radius: var(--radius-full);
+  font-size: var(--text-2xs); color: var(--text-tertiary);
+}
+.compose-picks li.not-ready { color: var(--text-tertiary); }
+.compose-picks li.not-ready em { color: var(--warning); font-style: normal; }
 
 /* =============================================================================
    资产库 / 个人中心 / 登录

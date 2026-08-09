@@ -9,6 +9,7 @@ import { useCanvasSync } from '@/canvas/useCanvasSync';
 import { CanvasCardView } from '@/canvas/CanvasCardView';
 import { ConversationDock } from '@/canvas/ConversationDock';
 import { CardRerunPanel } from '@/canvas/CardRerunPanel';
+import { ComposeBar } from '@/canvas/ComposeBar';
 
 interface DragState {
   pointerId: number;
@@ -47,6 +48,10 @@ export function CanvasPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rerunOpen, setRerunOpen] = useState(false);
   const [droppedRefs, setDroppedRefs] = useState<string[]>([]);
+  // 合成模式：点选卡片不再是"选中"，而是往片段序列里追加。数组顺序即成片顺序，
+  // 所以它是 string[] 而不是 Set——用户点选的先后是这个功能唯一的排序依据。
+  const [composing, setComposing] = useState(false);
+  const [picks, setPicks] = useState<string[]>([]);
   // 拖卡片的中间位置只落在这里，松手才写进缓存并排队上行
   const dragRef = useRef<DragState | null>(null);
   const [dragPos, setDragPos] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -137,6 +142,15 @@ export function CanvasPage() {
     enqueue([{ type: 'card.delete', id }], (prev) => ({ ...prev, cards: prev.cards.filter((c) => c.id !== id) }));
   }
 
+  // 合成模式下点卡片是加/减片段；再点一次同一张就把它取消，序号自动前移。
+  function onCardClick(id: string): void {
+    if (!composing) {
+      setSelectedId(id);
+      return;
+    }
+    setPicks((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
   if (isLoading || !canvas) {
     return <div className="empty">画布加载中…</div>;
   }
@@ -161,6 +175,17 @@ export function CanvasPage() {
           </span>
           <button type="button" className="btn btn-sm" onClick={addTextCard}>
             ＋ 便签
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm${composing ? ' btn-primary' : ''}`}
+            onClick={() => {
+              setComposing((on) => !on);
+              setSelectedId(null);
+              setPicks([]);
+            }}
+          >
+            🎬 合成
           </button>
           <button type="button" className="btn btn-sm" disabled={!selected} onClick={deleteSelected}>
             删除卡片
@@ -207,7 +232,8 @@ export function CanvasPage() {
                 selected={card.id === selectedId}
                 lineage={lineageIds.has(card.id)}
                 dimmed={Boolean(selectedId) && card.id !== selectedId && !lineageIds.has(card.id)}
-                onSelect={setSelectedId}
+                pickIndex={picks.indexOf(card.id) + 1}
+                onSelect={onCardClick}
                 onDragStart={onCardDragStart}
               />
             );
@@ -271,12 +297,27 @@ export function CanvasPage() {
             />
           )}
 
-          <ConversationDock
-            projectId={projectId}
-            conversation={canvas.conversation}
-            refCards={refCards}
-            onRemoveRef={(id) => setDroppedRefs((prev) => [...prev, id])}
-          />
+          {/* 合成条与对话坞都占底部，同时出现会互相压住；合成是个短暂的模式，
+              退出就回到对话。 */}
+          {composing ? (
+            <ComposeBar
+              projectId={projectId}
+              picks={picks}
+              cards={cards}
+              onClear={() => setPicks([])}
+              onExit={() => {
+                setComposing(false);
+                setPicks([]);
+              }}
+            />
+          ) : (
+            <ConversationDock
+              projectId={projectId}
+              conversation={canvas.conversation}
+              refCards={refCards}
+              onRemoveRef={(id) => setDroppedRefs((prev) => [...prev, id])}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -72,7 +72,6 @@ func (s *server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	ctx := r.Context()
 
 	if strings.TrimSpace(req.ModelID) == "" {
 		writeError(w, r, errFields(
@@ -85,28 +84,44 @@ func (s *server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 幂等：断网重发拿回同一个任务，而不是又生成一次、又冻结一次。
-	if existing, ok, err := s.deps.Tasks.GetByClientToken(ctx, id.UserID, req.ClientToken); err != nil {
+	task, created, err := s.submitTask(r.Context(), id.UserID, req)
+	if err != nil {
 		writeError(w, r, err)
 		return
-	} else if ok {
-		writeJSON(w, http.StatusOK, taskAccepted(existing))
+	}
+	if !created {
+		writeJSON(w, http.StatusOK, taskAccepted(task))
 		return
+	}
+	writeJSON(w, http.StatusCreated, taskAccepted(task))
+}
+
+// submitTask 是「提交一条生成任务」的完整流程：幂等命中 → 校验 → 计价 →
+// 落库 → 冻结 → 推事件。created 为 false 表示这是一次幂等命中，任务早就存在。
+//
+// 抽出来是因为它有第二个调用方：画布的分镜拆解要为每个镜头起一条真任务
+// （见 handlers_canvas.go）。那条路要的与 REST 入口**一字不差**——同一套
+// 参数校验、同一套并发上限、同一套先查余额再落库再冻结的顺序。复制一份的话，
+// 两条路迟早在某次修改后对同一份提交给出不同的判定，而那种分叉在账上体现
+// 出来的时候已经晚了。
+func (s *server) submitTask(ctx context.Context, userID string, req createTaskRequest) (domain.Task, bool, error) {
+	// 幂等：断网重发拿回同一个任务，而不是又生成一次、又冻结一次。
+	if existing, ok, err := s.deps.Tasks.GetByClientToken(ctx, userID, req.ClientToken); err != nil {
+		return domain.Task{}, false, err
+	} else if ok {
+		return existing, false, nil
 	}
 
 	model, err := s.deps.Models.Get(ctx, req.ModelID)
 	if err != nil {
-		writeError(w, r, err)
-		return
+		return domain.Task{}, false, err
 	}
 	if !model.Enabled {
-		writeError(w, r, errInvalid("模型 %s 当前不可用", req.ModelID))
-		return
+		return domain.Task{}, false, errInvalid("模型 %s 当前不可用", req.ModelID)
 	}
 	schema, err := capability.DecodeSchema(model.Capability)
 	if err != nil {
-		writeError(w, r, errInternal(err))
-		return
+		return domain.Task{}, false, errInternal(err)
 	}
 
 	sub := capability.Submission{
@@ -116,29 +131,25 @@ func (s *server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		Params:  req.Params,
 	}
 	if fields := s.deps.Validator.Validate(schema, sub); len(fields) > 0 {
-		writeError(w, r, errFields(fields, "参数校验未通过"))
-		return
+		return domain.Task{}, false, errFields(fields, "参数校验未通过")
 	}
 	// 输入槽引用的 upload 必须是本人的。校验器只管"槽填得对不对"，
 	// 管不到"这个 upload_id 是谁的"——少了这一步，猜到一个 id 就能拿别人的图去生成。
-	if err := s.assertOwnsUploads(ctx, id.UserID, req.Inputs); err != nil {
-		writeError(w, r, err)
-		return
+	if err := s.assertOwnsUploads(ctx, userID, req.Inputs); err != nil {
+		return domain.Task{}, false, err
 	}
 
 	if max := schema.Limits.MaxConcurrentPerUser; max > 0 {
-		running, err := s.deps.Tasks.CountRunningByModel(ctx, id.UserID, req.ModelID)
+		running, err := s.deps.Tasks.CountRunningByModel(ctx, userID, req.ModelID)
 		if err != nil {
-			writeError(w, r, err)
-			return
+			return domain.Task{}, false, err
 		}
 		if running >= max {
-			writeError(w, r, &domain.Error{
+			return domain.Task{}, false, &domain.Error{
 				Code:      domain.CodeRateLimited,
 				Message:   "该模型的并发上限是 " + itoa(max) + " 个任务",
 				Retryable: true,
-			})
-			return
+			}
 		}
 	}
 
@@ -147,23 +158,21 @@ func (s *server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		Inputs: req.Inputs,
 	})
 	if err != nil {
-		writeError(w, r, err)
-		return
+		return domain.Task{}, false, err
 	}
 
-	// 落库前先看一眼余额，见本函数的头注释。
-	if bal, err := s.deps.Ledger.Balance(ctx, id.UserID); err == nil && bal.Available < cost {
-		writeError(w, r, &domain.Error{
+	// 落库前先看一眼余额，见 handleCreateTask 的头注释。
+	if bal, err := s.deps.Ledger.Balance(ctx, userID); err == nil && bal.Available < cost {
+		return domain.Task{}, false, &domain.Error{
 			Code:    domain.CodeInsufficientCredit,
 			Message: "积分不足：需要 " + itoa(cost) + "，可用 " + itoa(bal.Available),
-		})
-		return
+		}
 	}
 
 	eta := schema.ETA.P50Seconds
 	task, err := s.deps.Tasks.Create(ctx, domain.Task{
 		ID:            uid.New(),
-		UserID:        id.UserID,
+		UserID:        userID,
 		ModelID:       model.ID,
 		ProviderID:    model.ProviderID,
 		Status:        domain.TaskStatusQueued,
@@ -177,27 +186,25 @@ func (s *server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     s.now(),
 	})
 	if err != nil {
-		writeError(w, r, err)
-		return
+		return domain.Task{}, false, err
 	}
 
-	if _, err := s.deps.Ledger.Hold(ctx, id.UserID, task.ID, cost); err != nil {
+	if _, err := s.deps.Ledger.Hold(ctx, userID, task.ID, cost); err != nil {
 		// 冻结失败的补偿：把任务判失败并明确标注未扣费。
 		// expect=queued 保证 worker 已经捞走时不会覆盖它的状态。
 		terr := taskErrorFrom(err)
 		_ = s.deps.Tasks.UpdateStatus(detachedContext(), task.ID,
 			domain.TaskStatusQueued, domain.TaskStatusFailed, &terr)
-		writeError(w, r, err)
-		return
+		return domain.Task{}, false, err
 	}
 
 	if eta > 0 {
 		task.ETASeconds = &eta
 	}
-	s.publish(ctx, stream.TaskUpdated(id.UserID, task))
-	s.publishBalance(ctx, id.UserID)
+	s.publish(ctx, stream.TaskUpdated(userID, task))
+	s.publishBalance(ctx, userID)
 
-	writeJSON(w, http.StatusCreated, taskAccepted(task))
+	return task, true, nil
 }
 
 // assertOwnsUploads 校验 inputs 里引用的每个 upload 都属于调用方。

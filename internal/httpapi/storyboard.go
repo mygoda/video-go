@@ -1,20 +1,22 @@
 // 画布对话的分镜拆解：把用户发来的一段脚本交给 chat 模型拆成若干镜头，
-// 每个镜头落成画布上的一张文本卡片。
+// 每个镜头落成画布上的一张卡片，并为每张卡片起一条真的出片任务。
 //
-// # 为什么是同步做完直接返回卡片，而不是派一串任务
+// # 拆解本身同步，出片走任务
 //
 // 拆分镜的产物是**文字**，chat 族本身就是一次 HTTP 往返拿结果（见
 // domain.ProtocolFamily 的注释）。为它建 task 行、冻结积分、走 worker、
 // 再从 SSE 推回来，只是把一次几秒的调用包装成一条永远不会失败得更少的
-// 异步链路，还要用户盯着转圈。因此这里直接调 driver、直接落卡片、
-// 直接把新卡片回给前端；task_ids 保持空数组，因为**确实没有任务**——
-// 那和以前"恒为空数组假装派了任务"是两回事。
+// 异步链路，还要用户盯着转圈。因此拆解这一步直接调 driver、直接落卡片。
+//
+// 出片是另一回事：一段 4 秒的视频要在上游跑一分多钟。它必须走完整任务链路
+// （落库、冻结、worker、失败退款、SSE），因此 handleCanvasChat 拆完之后
+// 为每张卡片调一次 submitTask，响应里的 task_ids 是**真的任务 id**。
 //
 // # 为什么不写死模型
 //
-// 选模型走 ModelConfig：优先取配置里的默认分镜模型（AIGC_STORYBOARD_MODEL），
-// 没配就取第一个启用的 chat 族模型。写死一个 id 意味着换供应商要改代码发版，
-// 而"改配置不重启不发版"正是 models 表存在的理由。
+// 拆解模型走 ModelConfig：优先取配置里的默认分镜模型（AIGC_STORYBOARD_MODEL），
+// 没配就取第一个启用的 chat 族模型。出片模型走技能的 default_model_id。
+// 两边都不写死 id，是因为"改配置不重启不发版"正是 models / skills 表存在的理由。
 package httpapi
 
 import (
@@ -37,6 +39,18 @@ const (
 	// storyboardMaxShots 是一次拆解最多落多少张卡片。上界不是性能考虑，
 	// 是防止模型把一句话拆成四十个镜头把画布糊满。
 	storyboardMaxShots = 12
+
+	// storyboardDefaultShots 是提示词里要求模型拆出的镜头数。
+	//
+	// **它是一个成本闸门，不是审美选择。** 每个镜头都要真调一次视频模型：
+	// 一段 4 秒 480p 约 80 秒、要花真金白银，12 段就是十几分钟加十几倍的钱，
+	// 而分镜的价值在"看到这个故事被切成了几个画面"，第 4 段之后的边际信息
+	// 迅速趋近于零。取 3 段：足够呈现起承转合，一轮总时长仍在用户愿意等的
+	// 量级内。要更多镜头就再说一句话继续拆，那是用户主动选择多花的钱。
+	//
+	// 写进提示词而不是"拆 12 个再砍到 3 个"：砍掉的那 9 个镜头模型已经算过、
+	// token 已经花过，而且被砍掉的往往正是结尾，留下的三段讲不完一个故事。
+	storyboardDefaultShots = 3
 
 	// 新卡片的排布参数。文本卡片按行铺开，宽高与前端文本卡的默认尺寸同量级。
 	storyboardCardW  = 280.0
@@ -224,9 +238,10 @@ func storyboardPrompt(script string, refs []domain.Card) string {
 	b.WriteString("要求：\n")
 	b.WriteString("1. 只输出一个 JSON 数组，不要输出任何解释、前后缀或代码块标记。\n")
 	b.WriteString("2. 数组每一项形如 {\"title\": \"镜头标题\", \"description\": \"这个镜头的画面描述\"}。\n")
-	b.WriteString("3. title 控制在 12 个字以内，description 是可以直接用于文生图的画面描述，")
+	b.WriteString("3. title 控制在 12 个字以内，description 是可以直接用于文生视频的画面描述，")
 	b.WriteString("包含主体、动作、环境、镜头语言。\n")
-	b.WriteString(fmt.Sprintf("4. 镜头数量按内容长度自行决定，最多 %d 个。\n", storyboardMaxShots))
+	b.WriteString(fmt.Sprintf("4. 正好拆 %d 个镜头，不多不少；如果内容很长，就挑最关键的 %d 个画面。\n",
+		storyboardDefaultShots, storyboardDefaultShots))
 
 	if len(refs) > 0 {
 		b.WriteString("\n已有画布卡片（作为上下文参考，风格与设定要与它们保持一致）：\n")
@@ -320,12 +335,74 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
+// storyboardShotPlan 是「这批镜头卡由谁出片」。
+//
+// Model 为 nil 表示这次只落文本卡、不生成——技能没配 default_model_id 时如此。
+// 出片模型来自技能而不是配置项：短剧要视频、产品广告要图，这个差别本来
+// 就记在 skills 表里，再在代码里判一次就等于同一件事有两个出处。
+type storyboardShotPlan struct {
+	Model  *domain.ModelConfig
+	Params map[string]any
+}
+
+// storyboardPlan 按技能查出这批镜头该用哪个模型出片。
+//
+// skillID 为空、或技能没配默认模型，都退回"只落文本卡"——画布上随便说句话
+// 不该悄悄开始烧积分。配了但模型禁用/族别不对则明确报错，不静默退回文本卡：
+// 用户选了「短剧」就是要片子，给他一堆字并告诉他成功了是更坏的结果。
+func (s *server) storyboardPlan(ctx context.Context, skillID string) (storyboardShotPlan, error) {
+	skillID = strings.TrimSpace(skillID)
+	if skillID == "" {
+		return storyboardShotPlan{}, nil
+	}
+	sk, err := s.deps.Skill.Get(ctx, skillID)
+	if err != nil {
+		return storyboardShotPlan{}, err
+	}
+	if sk.DefaultModelID == nil || strings.TrimSpace(*sk.DefaultModelID) == "" {
+		return storyboardShotPlan{}, nil
+	}
+
+	m, err := s.deps.Models.Get(ctx, *sk.DefaultModelID)
+	if err != nil {
+		return storyboardShotPlan{}, err
+	}
+	if !m.Enabled {
+		return storyboardShotPlan{}, errInvalid(
+			"技能「%s」的默认模型 %s 当前已禁用", sk.Name, m.ID)
+	}
+	if _, ok := storyboardCardKind(m.Family); !ok {
+		return storyboardShotPlan{}, errInvalid(
+			"技能「%s」的默认模型 %s 的 protocol_family 是 %s，分镜出片需要 video 或 images",
+			sk.Name, m.ID, m.Family)
+	}
+	return storyboardShotPlan{Model: &m, Params: sk.DefaultParams}, nil
+}
+
+// storyboardCardKind 把出片模型的协议族翻成卡片类型。
+//
+// 卡片的 kind 在建卡时就必须定死：它不在 card.update 的白名单里
+// （见 mysql.cardPatchColumns），事后改不了。
+func storyboardCardKind(f domain.ProtocolFamily) (domain.CardKind, bool) {
+	switch f {
+	case domain.FamilyVideo:
+		return domain.CardKindVideo, true
+	case domain.FamilyImages:
+		return domain.CardKindImage, true
+	default:
+		return "", false
+	}
+}
+
 // storyboardCards 把镜头铺成卡片。
 //
 // 起始纵坐标取现有卡片的最低边之下，新的一批不会盖在旧卡片上；
 // AutoPlaced 置 true，用户手动挪过之后前端会把它翻成 false，
 // 那一片区域就退出自动重排。
-func storyboardCards(shots []storyboardShot, existing []domain.Card, refs []string, now time.Time) []domain.Card {
+//
+// plan 有模型时建的是 video/image 卡：Prompt 就是待会儿发给出片模型的画面
+// 描述，Text 仍然填上，好让卡片在产物回来之前不是一片空白。
+func storyboardCards(shots []storyboardShot, existing []domain.Card, refs []string, plan storyboardShotPlan, now time.Time) []domain.Card {
 	baseY := 0.0
 	topZ := 0.0
 	for _, c := range existing {
@@ -343,14 +420,23 @@ func storyboardCards(shots []storyboardShot, existing []domain.Card, refs []stri
 		refs = []string{}
 	}
 
+	kind := domain.CardKindText
+	modelID := ""
+	if plan.Model != nil {
+		modelID = plan.Model.ID
+		if k, ok := storyboardCardKind(plan.Model.Family); ok {
+			kind = k
+		}
+	}
+
 	cards := make([]domain.Card, 0, len(shots))
 	for i, sh := range shots {
 		row := i / storyboardPerRow
 		col := i % storyboardPerRow
 		text := sh.Description
-		cards = append(cards, domain.Card{
+		c := domain.Card{
 			ID:         uid.New(),
-			Kind:       domain.CardKindText,
+			Kind:       kind,
 			Title:      sh.Title,
 			X:          float64(col) * (storyboardCardW + storyboardGap),
 			Y:          baseY + float64(row)*(storyboardCardH+storyboardGap),
@@ -362,7 +448,14 @@ func storyboardCards(shots []storyboardShot, existing []domain.Card, refs []stri
 			History:    []domain.CardVersion{},
 			AutoPlaced: true,
 			CreatedAt:  now,
-		})
+		}
+		if plan.Model != nil {
+			prompt := sh.Description
+			c.Prompt = &prompt
+			c.ModelID = &modelID
+			c.Params = plan.Params
+		}
+		cards = append(cards, c)
 	}
 	return cards
 }

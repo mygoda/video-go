@@ -418,8 +418,75 @@ func (r *canvasRepo) ApplyOps(ctx context.Context, projectID string, baseRevisio
 	return newRevision, nil
 }
 
-// applyOp 把一条 op 落到物化的卡片 / 视口上。
+// SetCardResult 把任务产物回填到卡片上，并推进 revision。见 store.CanvasRepo。
 //
+// 同样往 canvas_ops 里追一条 card.update：那张表是「创作过程可回放」的数据
+// 基础，而"这张卡在第 N 版拿到了产物"正是回放最需要的一帧。少记这一条，
+// 回放出来的画布会从头到尾都是空卡片。
+//
+// actor_user_id 记项目主人而不是留空：这一列非空，且产物确实是他花积分生成的。
+func (r *canvasRepo) SetCardResult(ctx context.Context, projectID, cardID string, assetID *string) error {
+	if err := requireID("project id", projectID); err != nil {
+		return err
+	}
+	if err := requireID("card id", cardID); err != nil {
+		return err
+	}
+
+	return withTx(ctx, r.db, func(tx *sql.Tx) error {
+		var (
+			current int64
+			userID  string
+		)
+		switch err := tx.QueryRowContext(ctx,
+			`SELECT revision, user_id FROM projects WHERE id = ? AND deleted_at IS NULL FOR UPDATE`,
+			projectID).Scan(&current, &userID); {
+		case isNoRows(err):
+			// 画布被删了。任务本身没问题，产物已经在资产库里，无处回填而已。
+			return nil
+		case err != nil:
+			return wrap("lock project", err)
+		}
+
+		res, err := tx.ExecContext(ctx,
+			`UPDATE canvas_cards SET asset_id = ?
+			 WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
+			nullString(assetID), cardID, projectID)
+		if err != nil {
+			return wrap("set card result", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return wrap("set card result", err)
+		} else if n == 0 {
+			// 卡片被用户删掉了。不推进 revision——什么也没变。
+			return nil
+		}
+
+		next := current + 1
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE projects SET revision = ? WHERE id = ?`, next, projectID); err != nil {
+			return wrap("bump project revision", err)
+		}
+
+		ops := []domain.CanvasOp{{
+			Type:  domain.OpCardUpdate,
+			ID:    cardID,
+			Patch: map[string]any{"asset_id": assetID},
+		}}
+		opsJSON, err := json.Marshal(ops)
+		if err != nil {
+			return wrap("marshal card result op", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO canvas_ops (project_id, revision, ops, actor_user_id) VALUES (?, ?, ?, ?)`,
+			projectID, next, opsJSON, userID); err != nil {
+			return wrap("append canvas ops", err)
+		}
+		return nil
+	})
+}
+
+// applyOp 把一条 op 落到物化的卡片 / 视口上。//
 // 判别逻辑本该集中在 canvas.Applier（见 domain.CanvasOp 的注释），但那一层
 // 委托给了本仓储（canvas.applier 自己不写 SQL，因为事务边界属于仓储），
 // 因此分派实际发生在这里。每个分支只碰它该碰的列。

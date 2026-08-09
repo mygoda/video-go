@@ -14,6 +14,8 @@ interface CanvasCardViewProps {
   selected: boolean;
   lineage: boolean;
   dimmed: boolean;
+  /** 合成模式下的片段序号（从 1 起）；未入选为 0。序号即成片里的先后 */
+  pickIndex: number;
   onSelect(id: string): void;
   onDragStart(e: React.PointerEvent, card: CanvasCard): void;
 }
@@ -44,6 +46,7 @@ export function CanvasCardView({
   selected,
   lineage,
   dimmed,
+  pickIndex,
   onSelect,
   onDragStart,
 }: CanvasCardViewProps) {
@@ -61,6 +64,7 @@ export function CanvasCardView({
     selected ? 'selected' : '',
     lineage ? 'lineage' : '',
     dimmed ? 'dimmed' : '',
+    pickIndex > 0 ? 'picked' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -89,6 +93,8 @@ export function CanvasCardView({
       <div className="cap">
         {icon} {cardTitle(card)}
       </div>
+
+      {pickIndex > 0 && <span className="pick-index mono">{pickIndex}</span>}
 
       {card.kind === 'text' ? (
         <div className="body">{card.text}</div>
