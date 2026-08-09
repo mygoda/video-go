@@ -5,6 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -194,6 +198,7 @@ func (t *transferor) Transfer(ctx context.Context, userID, taskID string, ref ad
 		id := taskID
 		a.TaskID = &id
 	}
+	t.fillImageSize(ctx, &a)
 
 	saved, err := t.assets.Create(ctx, a)
 	if err != nil {
@@ -212,6 +217,39 @@ func (t *transferor) Transfer(ctx context.Context, userID, taskID string, ref ad
 		}
 	}
 	return saved, nil
+}
+
+// imageHeaderSniffBytes 是为读宽高而取的文件头长度。JPEG 的 SOF 段可以排在
+// 一长串 EXIF 之后，几百字节往往不够；64KB 足够覆盖常见相机与生成模型的输出，
+// 又不至于把一张大图整个读进内存。
+const imageHeaderSniffBytes = 64 << 10
+
+// fillImageSize 在上游没报宽高时，从刚落地的字节里把它读出来。
+//
+// 资产库的瀑布流按宽高比排版，尺寸缺失时只能退回统一行高，一屏图会全被裁成
+// 同一个形状。上游报不报尺寸是它的自由（GPUGeek 的 predictions 就不报），
+// 但字节已经在我们手上了，没道理不认。
+//
+// 读不出来就保持 0：这是排版的锦上添花，不值得让一次成功的转存失败。
+// WebP 不在标准库的解码器里，会走到这条路径上——多一个依赖不如少一点排版精度。
+func (t *transferor) fillImageSize(ctx context.Context, a *domain.Asset) {
+	if a.Type != domain.AssetTypeImage || (a.Width != nil && a.Height != nil) {
+		return
+	}
+	rc, _, err := t.blobs.GetRange(ctx, a.StorageKey, 0, imageHeaderSniffBytes)
+	if err != nil {
+		t.log.Warn("读产物文件头失败，宽高留空", "asset_id", a.ID, "err", err)
+		return
+	}
+	defer func() { _ = rc.Close() }()
+
+	cfg, format, err := image.DecodeConfig(rc)
+	if err != nil {
+		t.log.Warn("产物文件头解不出宽高，留空", "asset_id", a.ID, "mime", a.MIME, "err", err)
+		return
+	}
+	a.Width, a.Height = &cfg.Width, &cfg.Height
+	t.log.Debug("从字节里补出产物宽高", "asset_id", a.ID, "format", format, "w", cfg.Width, "h", cfg.Height)
 }
 
 // Promote 把一个临时 upload 提升为正式 asset。

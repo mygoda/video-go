@@ -1,8 +1,11 @@
 package asset
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"log/slog"
 	"strings"
@@ -332,5 +335,67 @@ func TestTransferAllRejectsEmpty(t *testing.T) {
 	tr, _ := newTestTransferor(t, ra, nil, &artifactDriver{})
 	if _, err := tr.TransferAll(context.Background(), "u1", "task-1", nil, videoReq()); err == nil {
 		t.Fatal("空产物列表应报错，否则会留下一条没有任何产物的 succeeded 任务")
+	}
+}
+
+// TestTransferBackfillsImageSize 验证上游不报宽高时，宽高从字节里读出来。
+//
+// GPUGeek 的 predictions 就不报尺寸。宽高缺失不会让任何接口报错，只会让
+// 资产库的瀑布流退回统一行高，把一屏图裁成同一个形状——这种"没坏但不对"
+// 的退化没有测试盯着就会一直躺在那儿。
+func TestTransferBackfillsImageSize(t *testing.T) {
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 7, 3))); err != nil {
+		t.Fatalf("造测试图: %v", err)
+	}
+
+	ra := &recordingAssets{}
+	drv := &artifactDriver{bodies: map[string]string{"a": buf.String()}}
+	tr, _ := newTestTransferor(t, ra, nil, drv)
+
+	a, err := tr.Transfer(ctx, "u1", "task-1",
+		adapter.ArtifactRef{Kind: adapter.KindURL, Type: domain.AssetTypeImage, MIME: "image/png", URL: "a"},
+		videoReq())
+	if err != nil {
+		t.Fatalf("Transfer: %v", err)
+	}
+	if a.Width == nil || a.Height == nil {
+		t.Fatal("上游没报宽高时应从字节里补出来，实际是空的")
+	}
+	if *a.Width != 7 || *a.Height != 3 {
+		t.Fatalf("宽高应为 7x3，实际 %dx%d", *a.Width, *a.Height)
+	}
+}
+
+// TestTransferKeepsUpstreamImageSize 验证上游报了宽高就不去动它。
+//
+// 上游知道的可能比字节头多（比如它给的是渲染意图上的尺寸），
+// 补齐是兜底，不是覆盖。
+func TestTransferKeepsUpstreamImageSize(t *testing.T) {
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 7, 3))); err != nil {
+		t.Fatalf("造测试图: %v", err)
+	}
+
+	ra := &recordingAssets{}
+	drv := &artifactDriver{bodies: map[string]string{"a": buf.String()}}
+	tr, _ := newTestTransferor(t, ra, nil, drv)
+
+	w, h := 1024, 768
+	a, err := tr.Transfer(ctx, "u1", "task-1",
+		adapter.ArtifactRef{
+			Kind: adapter.KindURL, Type: domain.AssetTypeImage, MIME: "image/png", URL: "a",
+			Width: &w, Height: &h,
+		},
+		videoReq())
+	if err != nil {
+		t.Fatalf("Transfer: %v", err)
+	}
+	if a.Width == nil || *a.Width != 1024 || a.Height == nil || *a.Height != 768 {
+		t.Fatalf("上游报的宽高应原样保留，实际 %v x %v", a.Width, a.Height)
 	}
 }
