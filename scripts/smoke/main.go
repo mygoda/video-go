@@ -34,8 +34,20 @@ func main() {
 
 var baseURL = envOr("AIGC_SMOKE_BASE_URL", "http://localhost:18080")
 
+// taskBudget 是单条任务从入队到终态的等待上限，runBudget 是整轮 smoke 的上限。
+//
+// 这两个数原先是 3 分钟和 5 分钟，那是目录里还全是 mock 驱动时定的——假驱动
+// 立刻返回，多久都够。接上 GPUGeek 之后一条真视频要跑四分半，于是 smoke 会在
+// 一个完全健康的系统上红掉，而红的原因和被测的东西无关。
+// 按真实上游的量级重定：单条留 10 分钟（与 asset 转存的超时同量级），
+// 整轮留 20 分钟（图片 + 视频 + 幂等复用一次，还剩出重试的余量）。
+const (
+	taskBudget = 10 * time.Minute
+	runBudget  = 20 * time.Minute
+)
+
 func run() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), runBudget)
 	defer cancel()
 
 	adminUser := envOr("AIGC_SEED_ADMIN_USERNAME", "admin")
@@ -296,7 +308,7 @@ func runTask(ctx context.Context, token string, sse *sseClient, m *modelSchema, 
 	}
 	fmt.Printf("  · 已入队 task=%s estimated_cost=%d\n", created.TaskID, created.EstimatedCost)
 
-	deadline := time.Now().Add(3 * time.Minute)
+	deadline := time.Now().Add(taskBudget)
 	var last string
 	for time.Now().Before(deadline) {
 		var t task
@@ -324,7 +336,7 @@ func runTask(ctx context.Context, token string, sse *sseClient, m *modelSchema, 
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("任务 %s 三分钟没跑完", created.TaskID)
+	return nil, fmt.Errorf("任务 %s 过了 %s 还没跑完", created.TaskID, taskBudget)
 }
 
 // checkAssets 断言产物真的落到了本平台存储，而不是留了个上游 URL。
