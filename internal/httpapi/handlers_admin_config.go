@@ -157,6 +157,9 @@ type modelUpsert struct {
 	RequestMapping      json.RawMessage       `json:"request_mapping"`
 	PollIntervalSeconds *int                  `json:"poll_interval_seconds"`
 	Enabled             *bool                 `json:"enabled"`
+	// Visibility 缺省为空串，仓储补成 public。要把一个模型从用户端目录里
+	// 摘掉（QA 夹具、画布内部用的合成模型）就显式传 internal。
+	Visibility domain.ModelVisibility `json:"visibility"`
 }
 
 // handleAdminCreateModel 是「接一个走已知协议的新模型 = 加一条记录」的落点。
@@ -228,6 +231,7 @@ func (s *server) upsertModel(w http.ResponseWriter, r *http.Request, forceID str
 		Capability:          json.RawMessage(req.Capability),
 		PollIntervalSeconds: req.PollIntervalSeconds,
 		Enabled:             req.Enabled == nil || *req.Enabled,
+		Visibility:          req.Visibility,
 		UpdatedAt:           s.now(),
 	}
 	if len(req.RequestMapping) > 0 {
@@ -273,6 +277,9 @@ func (s *server) handleAdminListModels(w http.ResponseWriter, r *http.Request) {
 	if e := r.URL.Query().Get("enabled"); e != "" {
 		v := e == "true" || e == "1"
 		f.Enabled = &v
+	}
+	if v := r.URL.Query().Get("visibility"); v != "" {
+		f.Visibility = domain.ModelVisibility(v)
 	}
 	items, err := s.deps.Models.List(r.Context(), f)
 	if err != nil {

@@ -141,6 +141,7 @@ export function AdminModelsPage() {
                     ) : (
                       <span className="tag tone-muted">已停用</span>
                     )}
+                    {m.visibility === 'internal' && <span className="tag tone-muted">内部</span>}
                   </td>
                   <td>{formatRelative(m.updated_at)}</td>
                   <td>

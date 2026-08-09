@@ -3,11 +3,34 @@ package domain
 import "time"
 
 // Modality 决定模型归入前端哪个 tab。tab 结构固定为 image / video 两个。
+//
+// ModalityText 没有对应的 tab，这是刻意的：文本模型（chat 族）不是用户能
+// 在创作页选的产品，它们是分镜拆解这类平台内部能力的载体。给它一个真实的
+// 取值而不是塞进 image，是因为塞错的代价是**任务绿灯、产物是废的**——
+// 前端拿文本当图片渲染就是裂图，而任务状态显示成功，骗过所有自动检查。
 type Modality string
 
 const (
 	ModalityImage Modality = "image"
 	ModalityVideo Modality = "video"
+	ModalityText  Modality = "text"
+)
+
+// ModelVisibility 是模型在**用户端目录**里的可见性，与 Enabled 是两回事。
+//
+// Enabled=false 是"这个模型停用了"，谁都用不了，包括平台自己；
+// VisibilityInternal 是"能用，但不摆进用户的模型下拉里"。mock 驱动、QA 探针、
+// 画布内部调用的合成模型都属于后者：它们必须继续可用（QA 要拿它们跑回归，
+// 画布一键合成要拿它出片），但绝不能让用户在创作页点到。
+//
+// 少了这个维度就只剩 enabled 一个开关，于是"从用户端摘掉夹具"和"让 QA 用不了
+// 夹具"变成同一件事——2026-08-09 用户端暴露 qa-fail-probe（一个设计上必失败的
+// 探针）正是这么来的。
+type ModelVisibility string
+
+const (
+	VisibilityPublic   ModelVisibility = "public"
+	VisibilityInternal ModelVisibility = "internal"
 )
 
 // ProtocolFamily 是协议族。
@@ -112,15 +135,23 @@ type ModelConfig struct {
 	// （ark 12s / openai_video 15s 起指数退避）。
 	PollIntervalSeconds *int `json:"poll_interval_seconds"`
 
-	Enabled   bool      `json:"-"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Enabled bool `json:"-"`
+	// Visibility 缺省为空串，由仓储写库时补成 VisibilityPublic——
+	// 让"没想过这件事"落到"用户看得见"上，是因为反过来（默认藏起来）会让
+	// 管理员新加的模型静默不出现在用户端，那种错更难被发现。
+	Visibility ModelVisibility `json:"visibility"`
+	UpdatedAt  time.Time       `json:"updated_at"`
 }
 
-// ModelFilter 是模型配置查询条件。用户端只取 Enabled=true，
-// 管理端可取全量（含已禁用）。
+// ModelFilter 是模型配置查询条件。用户端只取 Enabled=true + Visibility=public，
+// 管理端可取全量（含已禁用与内部模型）。
+//
+// Visibility 留空表示**不过滤**：分镜拆解、画布合成这类平台内部的模型查找
+// 走的就是这条路径，它们要能找到内部模型。
 type ModelFilter struct {
-	Modality Modality
-	Enabled  *bool
+	Modality   Modality
+	Enabled    *bool
+	Visibility ModelVisibility
 }
 
 // BreakerSnapshot 是某供应商熔断器的对外可观测状态，

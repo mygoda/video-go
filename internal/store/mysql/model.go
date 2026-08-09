@@ -25,7 +25,7 @@ type modelRepo struct{ db *sql.DB }
 func NewModelRepo(db *sql.DB) store.ModelRepo { return &modelRepo{db: db} }
 
 const modelColumns = `id, provider_id, upstream_model, protocol_family, video_protocol,
-	capability, request_mapping, poll_interval_seconds, enabled, updated_at`
+	capability, request_mapping, poll_interval_seconds, enabled, visibility, updated_at`
 
 func scanModel(s rowScanner) (domain.ModelConfig, error) {
 	var (
@@ -37,7 +37,7 @@ func scanModel(s rowScanner) (domain.ModelConfig, error) {
 	)
 	err := s.Scan(
 		&m.ID, &m.ProviderID, &m.UpstreamModel, &m.Family, &videoProtocol,
-		&capabilityRaw, &mappingRaw, &pollIntervalNS, &m.Enabled, &m.UpdatedAt,
+		&capabilityRaw, &mappingRaw, &pollIntervalNS, &m.Enabled, &m.Visibility, &m.UpdatedAt,
 	)
 	if err != nil {
 		return domain.ModelConfig{}, err
@@ -72,6 +72,10 @@ func (r *modelRepo) List(ctx context.Context, f domain.ModelFilter) ([]domain.Mo
 	if f.Enabled != nil {
 		where = append(where, `enabled = ?`)
 		args = append(args, *f.Enabled)
+	}
+	if f.Visibility != "" {
+		where = append(where, `visibility = ?`)
+		args = append(args, string(f.Visibility))
 	}
 
 	sqlText := `SELECT ` + modelColumns + ` FROM models`
@@ -178,15 +182,32 @@ func (r *modelRepo) Upsert(ctx context.Context, m domain.ModelConfig) (domain.Mo
 		return domain.ModelConfig{}, invalidParam("video models require a video_protocol")
 	}
 	switch facets.Modality {
-	case domain.ModalityImage, domain.ModalityVideo:
+	case domain.ModalityImage, domain.ModalityVideo, domain.ModalityText:
 	default:
-		return domain.ModelConfig{}, invalidParam("capability.modality must be image or video")
+		return domain.ModelConfig{}, invalidParam("capability.modality must be image, video or text")
 	}
 	if facets.Name == "" || facets.Vendor == "" {
 		return domain.ModelConfig{}, invalidParam("capability.name and capability.vendor are required")
 	}
 	if strings.TrimSpace(m.UpstreamModel) == "" {
 		return domain.ModelConfig{}, invalidParam("model upstream_model must not be empty")
+	}
+
+	switch m.Visibility {
+	case "":
+		m.Visibility = domain.VisibilityPublic
+	case domain.VisibilityPublic, domain.VisibilityInternal:
+	default:
+		return domain.ModelConfig{}, invalidParam("unknown model visibility " + string(m.Visibility))
+	}
+	// 假驱动没有"要不要摆进用户目录"这个自由度：它出的是占位产物，
+	// 摆出去就是拿假图冒充作品。库里还有一条同义的 CHECK 兜住直接写库的路径，
+	// 这里先拦一道是为了让管理端拿到一条能读的 400，而不是驱动层的约束报错。
+	if m.Family == domain.FamilyMock ||
+		(m.VideoProtocol != nil && *m.VideoProtocol == domain.VideoProtocolMock) {
+		if m.Visibility != domain.VisibilityInternal {
+			return domain.ModelConfig{}, invalidParam("mock models must have visibility=internal")
+		}
 	}
 
 	var mappingArg any
@@ -201,9 +222,9 @@ func (r *modelRepo) Upsert(ctx context.Context, m domain.ModelConfig) (domain.Mo
 
 	const q = `INSERT INTO models
 		(id, provider_id, upstream_model, protocol_family, video_protocol, modality,
-		 enabled, display_order, name, vendor, description, preview_url,
+		 enabled, visibility, display_order, name, vendor, description, preview_url,
 		 capability, request_mapping, poll_interval_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		  provider_id           = VALUES(provider_id),
 		  upstream_model        = VALUES(upstream_model),
@@ -211,6 +232,7 @@ func (r *modelRepo) Upsert(ctx context.Context, m domain.ModelConfig) (domain.Mo
 		  video_protocol        = VALUES(video_protocol),
 		  modality              = VALUES(modality),
 		  enabled               = VALUES(enabled),
+		  visibility            = VALUES(visibility),
 		  display_order         = VALUES(display_order),
 		  name                  = VALUES(name),
 		  vendor                = VALUES(vendor),
@@ -223,7 +245,8 @@ func (r *modelRepo) Upsert(ctx context.Context, m domain.ModelConfig) (domain.Mo
 	err = withTx(ctx, r.db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, q,
 			m.ID, m.ProviderID, m.UpstreamModel, string(m.Family), videoProtocol,
-			string(facets.Modality), m.Enabled, facets.Order, facets.Name, facets.Vendor,
+			string(facets.Modality), m.Enabled, string(m.Visibility), facets.Order,
+			facets.Name, facets.Vendor,
 			nullStringNonEmpty(facets.Description), nullStringNonEmpty(facets.PreviewURL),
 			capabilityRaw, mappingArg, nullInt(m.PollIntervalSeconds)); err != nil {
 			return wrap("upsert model", err)

@@ -172,6 +172,8 @@ func testModelConfig(modelID, providerID string) domain.ModelConfig {
 		UpstreamModel: "upstream-" + modelID,
 		Family:        domain.FamilyMock,
 		Enabled:       true,
+		// mock 族只能是 internal（仓储与库里的 CHECK 各拦一道）。
+		Visibility: domain.VisibilityInternal,
 		Capability: map[string]any{
 			"id":       modelID,
 			"name":     "Test Model",

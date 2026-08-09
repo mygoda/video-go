@@ -42,13 +42,16 @@ func (s *server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	enabled := true
-	f := domain.ModelFilter{Enabled: &enabled}
+	// Visibility=public 是这个端点与管理端的唯一区别，也是"用户端不许看到
+	// mock 与 QA 夹具"这条线的**唯一**兑现点。分镜拆解、画布合成走的是
+	// 不带 Visibility 的 List，因此摘掉夹具不会顺手把平台内部能力也摘掉。
+	f := domain.ModelFilter{Enabled: &enabled, Visibility: domain.VisibilityPublic}
 	if m := r.URL.Query().Get("modality"); m != "" {
 		switch domain.Modality(m) {
-		case domain.ModalityImage, domain.ModalityVideo:
+		case domain.ModalityImage, domain.ModalityVideo, domain.ModalityText:
 			f.Modality = domain.Modality(m)
 		default:
-			writeError(w, r, errInvalid("modality 只能是 image 或 video"))
+			writeError(w, r, errInvalid("modality 只能是 image、video 或 text"))
 			return
 		}
 	}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ModelConfig, ModelConfigUpsert, ProbeResult, ProtocolFamily, Provider, VideoProtocol } from '@/api/types';
+import type { ModelConfig, ModelConfigUpsert, ModelVisibility, ProbeResult, ProtocolFamily, Provider, VideoProtocol } from '@/api/types';
 import type { ModelCapabilitySchema } from '@/schema/types';
 import { CapabilityEditor } from './CapabilityEditor';
 import { Sheet } from './Sheet';
@@ -8,6 +8,8 @@ const PROTOCOL_FAMILIES: { value: ProtocolFamily; label: string }[] = [
   { value: 'images', label: 'images（同步图片）' },
   { value: 'video', label: 'video（异步视频）' },
   { value: 'chat', label: 'chat（对话）' },
+  { value: 'predictions', label: 'predictions（模型市场，同步）' },
+  { value: 'compose', label: 'compose（本地分镜合成）' },
   { value: 'mock', label: 'mock（本地假接口）' },
 ];
 
@@ -15,7 +17,13 @@ const VIDEO_PROTOCOLS: { value: VideoProtocol; label: string }[] = [
   { value: 'ark', label: 'ark（火山方舟）' },
   { value: 'openai_video', label: 'openai_video' },
   { value: 'google_lro', label: 'google_lro' },
+  { value: 'predictions', label: 'predictions（模型市场，异步）' },
   { value: 'mock', label: 'mock' },
+];
+
+const VISIBILITIES: { value: ModelVisibility; label: string }[] = [
+  { value: 'public', label: 'public（用户端可见）' },
+  { value: 'internal', label: 'internal（仅平台内部与 QA）' },
 ];
 
 function blankCapability(modality: 'image' | 'video'): ModelCapabilitySchema {
@@ -41,6 +49,7 @@ export function blankModel(providerId: string): ModelConfigUpsert {
     upstream_model: '',
     protocol_family: 'images',
     video_protocol: null,
+    visibility: 'public',
     capability: blankCapability('image'),
     poll_interval_seconds: null,
   };
@@ -67,6 +76,9 @@ export function ModelSheet({ model, providers, busy, probe, probing, onProbe, on
           upstream_model: model.upstream_model,
           protocol_family: model.protocol_family,
           video_protocol: model.video_protocol ?? null,
+          // 必须原样带回：漏掉它就等于每次编辑都把一个 internal 的 QA 夹具
+          // 重新发布到用户端目录，而页面上看不出任何异样。
+          visibility: model.visibility ?? 'public',
           capability: model.capability,
           request_mapping: model.request_mapping,
           poll_interval_seconds: model.poll_interval_seconds ?? null,
@@ -99,6 +111,12 @@ export function ModelSheet({ model, providers, busy, probe, probing, onProbe, on
       return setError('视频协议族必须选择 video_protocol');
     }
     if (!draft.capability.name.trim()) return setError('展示名不能为空');
+    if (
+      (draft.protocol_family === 'mock' || draft.video_protocol === 'mock') &&
+      draft.visibility !== 'internal'
+    ) {
+      return setError('mock 驱动出的是占位产物，可见性必须是 internal');
+    }
     setError(null);
     onSubmit(draft);
   }
@@ -173,6 +191,21 @@ export function ModelSheet({ model, providers, busy, probe, probing, onProbe, on
               {PROTOCOL_FAMILIES.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="md-visibility">用户端可见性</label>
+            <select
+              id="md-visibility"
+              className="select"
+              value={draft.visibility ?? 'public'}
+              onChange={(e) => setDraft({ ...draft, visibility: e.target.value as ModelVisibility })}
+            >
+              {VISIBILITIES.map((v) => (
+                <option key={v.value} value={v.value}>
+                  {v.label}
                 </option>
               ))}
             </select>

@@ -226,9 +226,16 @@ export interface StreamEvent {
 
 /* ─────────────────────────── 管理后台（/api/admin/*） ─────────────────────────── */
 
-export type ProtocolFamily = 'chat' | 'images' | 'video' | 'mock';
-export type VideoProtocol = 'ark' | 'openai_video' | 'google_lro' | 'mock';
+export type ProtocolFamily = 'chat' | 'images' | 'video' | 'mock' | 'compose' | 'predictions';
+export type VideoProtocol = 'ark' | 'openai_video' | 'google_lro' | 'mock' | 'predictions';
 export type AuthStyle = 'bearer' | 'header' | 'query';
+
+/**
+ * 用户端目录可见性，与 capability.enabled 是两回事：
+ * enabled=false 是停用（谁都用不了），internal 是「能用，但不摆进用户的模型下拉」。
+ * QA 夹具、mock 驱动、画布内部调用的合成模型都是 internal。
+ */
+export type ModelVisibility = 'public' | 'internal';
 
 export interface Provider {
   id: string;
@@ -273,6 +280,7 @@ export interface ModelConfig {
   protocol_family: ProtocolFamily;
   /** 仅 protocol_family=video 时必填 */
   video_protocol?: VideoProtocol | null;
+  visibility?: ModelVisibility;
   capability: ModelCapabilitySchema;
   request_mapping?: RequestMapping;
   poll_interval_seconds?: number | null;

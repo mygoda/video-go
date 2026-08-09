@@ -301,6 +301,61 @@ func TestModelRepoUpsertValidation(t *testing.T) {
 	requireCode(t, repo.Delete(ctx, "no-such-model"), domain.CodeNotFound)
 }
 
+// TestModelRepoVisibility 覆盖用户端可见性这一维度在仓储层的三条规则。
+//
+// 它与 httpapi 里那条目录回归测试是一对：那边断"用户看到了什么"，
+// 这边断"库里能不能存出一个让用户看到假模型的状态"。
+func TestModelRepoVisibility(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	repo := NewModelRepo(db)
+	f := newFixture(t, 0, 1<<30)
+
+	// 1) mock 族不许 public：假驱动出的是占位产物，摆进用户目录就是拿假图冒充作品。
+	pub := testModelConfig("test-model-"+uid.Token(8), f.providerID)
+	pub.Visibility = domain.VisibilityPublic
+	_, err := repo.Upsert(ctx, pub)
+	requireCode(t, err, domain.CodeInvalidParam)
+
+	// 2) 缺省补 public：新加的模型该默认对用户可见，"忘了填"不能变成"静默藏起来"。
+	real := testModelConfig("test-model-"+uid.Token(8), f.providerID)
+	real.Family = domain.FamilyImages
+	real.Visibility = ""
+	created, err := repo.Upsert(ctx, real)
+	requireNoErr(t, err, "upsert model without visibility")
+	if created.Visibility != domain.VisibilityPublic {
+		t.Errorf("visibility 缺省应补成 public，实得 %q", created.Visibility)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM models WHERE id = ?`, real.ID)
+	})
+
+	// 3) List 按 visibility 过滤：夹具（internal）在过滤后必须消失，
+	//    但不带 Visibility 的查询仍要能找到它——分镜拆解与画布合成靠的就是那条路径。
+	enabled := true
+	public, err := repo.List(ctx, domain.ModelFilter{Enabled: &enabled, Visibility: domain.VisibilityPublic})
+	requireNoErr(t, err, "list public models")
+	for _, m := range public {
+		if m.ID == f.modelID {
+			t.Fatalf("internal 夹具 %s 出现在 public 列表里", f.modelID)
+		}
+		if m.Visibility != domain.VisibilityPublic {
+			t.Errorf("模型 %s 的 visibility=%q 混进了 public 列表", m.ID, m.Visibility)
+		}
+	}
+	all, err := repo.List(ctx, domain.ModelFilter{Enabled: &enabled})
+	requireNoErr(t, err, "list all models")
+	found := false
+	for _, m := range all {
+		if m.ID == f.modelID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("不带 visibility 的查询漏掉了 internal 模型 %s——画布合成会因此找不到驱动", f.modelID)
+	}
+}
+
 // TestSkillRepo 覆盖 List / Get / Upsert / Delete 与 SystemPromptRef 的派生规则。
 func TestSkillRepo(t *testing.T) {
 	db := requireDB(t)
