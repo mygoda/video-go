@@ -3,10 +3,21 @@
 --
 -- 接入 GPUGeek 作为第一个**真实**供应商，只接 chat 家族。
 --
--- 为什么只有 chat：GPUGeek 的 /v1/models 返回 101 个模型，全部是 LLM /
--- 多模态理解，没有任何文生图、文生视频模型；/v1/images/generations 与
--- /v1/video/generations 都返回「模型不存在或无权限」。因此图像与视频继续走
--- mock，接一个不存在的端点只会把失败推迟到用户提交任务的那一刻。
+-- 为什么只有 chat：GPUGeek 的 /v1/models 返回 101 个模型（本 key 可见的全部），
+-- 全部是 LLM / 视觉理解，没有任何文生图、文生视频模型。因此图像与视频继续走
+-- mock，接一个当前 key 调不通的模型只会把失败推迟到用户提交任务的那一刻。
+--
+-- ⚠️ 2026-08-09 复核，修正本段早先的两处错误推断（DEM-76）：
+--   1) GPUGeek 不是「只代理 chat/completions」。通用调用端点是
+--      POST /predictions（Replicate 风格 {"model","input"}，实测 200），
+--      /v1/* 只是额外的 OpenAI 兼容层。早先只探 /v1/* 就下结论，探漏了。
+--   2)「模型不存在或无权限」不是模型层面的证据，它是 api.gpugeek.com 对
+--      **任意未知路径**的兜底 404 文案（拿 /v1/definitely-not-a-real-endpoint
+--      实测同样回这句）。「模型不在注册表」的文案是 "<model> is not found"。
+-- 两句文案在 /predictions 上可稳定区分：GpuGeek/FLUX.1-dev 与
+-- GpuGeek/FLUX.1-Kontext-dev 回「模型不存在或无权限」= 平台有、本 key 无权限；
+-- 其余几十个图/视频模型名回 "... is not found" = 注册表里确实没有。
+-- 即：**卡点是账号权限，不是平台没有生成能力**。开通前结论不变，仍走 mock。
 --
 -- 为什么不写新 driver：GPUGeek 走标准 OpenAI 兼容协议，
 -- internal/adapter/openaicompat 的 chat 分支与 PathChatCompletions 逐字匹配。

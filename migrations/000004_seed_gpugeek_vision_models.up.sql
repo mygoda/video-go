@@ -9,10 +9,17 @@
 -- 这正是「接一个走已知协议的新模型 = 一条配置，零代码」该有的样子。
 --
 -- **措辞要分清：这是多模态输入（理解），不是多模态输出（生成）。**
--- 平台主线的文生图 / 文生视频仍然是 mock：GPUGeek 网关对
--- /v1/images/generations 回的是「method not supported」，它只代理
--- chat/completions，一个文生图 / 文生视频模型都没有。把这批模型说成
--- 「已接入真实 AIGC 上游」会让验收看错东西。
+-- 2026-08-09 复核实测（DEM-76）：给 qwen3-omni-flash / qwen-omni-turbo /
+-- qwen-vl-max / Gemini-3.1-pro / Doubao-Seed-1.6 传 modalities=["text","image"]
+-- 与 ["text","audio"]，五个模型一律回 object=chat.completion 且只有 content
+-- 文本，没有 images / audio 字段——该参数被网关静默忽略。**本 key 能调到的
+-- 模型里没有任何一个能输出图像或视频**，多模态仅指输入侧。平台主线的
+-- 文生图 / 文生视频因此仍然是 mock。把这批模型说成「已接入真实 AIGC 上游」
+-- 会让验收看错东西。
+--
+-- 注：早先此处写的「GPUGeek 网关对 /v1/images/generations 回 method not
+-- supported，它只代理 chat/completions」是错的——通用端点是 /predictions，
+-- 且真正的卡点是账号未开通生成类模型。详见 000003 头部的复核说明。
 --
 -- ── 为什么图必须内联（inline: true）─────────────────────────────────────
 -- 上游拉不到本平台的素材地址：给远程 URL 实测回 `400 Timeout while
