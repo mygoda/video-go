@@ -145,6 +145,11 @@ type TaskFilter struct {
 	ErrorCode TaskErrorCode
 	Cursor    string
 	Limit     int
+
+	// IncludeDismissed 让被用户移除的任务重新进入结果集。
+	// 默认 false（藏起来）是给用户侧的；管理端的任务监控显式置 true——
+	// 用户把一张失败卡片收起来，不该让那条任务从故障排查的视野里消失。
+	IncludeDismissed bool
 }
 
 // TaskModelStat 是某个模型在统计窗口内的表现。

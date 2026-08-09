@@ -327,6 +327,26 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Task' }
         '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [tasks]
+      summary: 从我的任务流里移除
+      operationId: dismissTask
+      description: |
+        **不删除记录**。credit_ledger 指向 tasks，账本是 append-only 的真相；
+        这里只是把任务从 `GET /api/tasks` 的结果里收起来，记账与产物都不受影响
+        （删产物走 `DELETE /api/assets/{assetId}`）。管理端的任务列表仍然看得到它。
+
+        只接受终态任务：还在跑的任务被收起来之后 SSE 照样推它的进度事件，
+        卡片会重新冒出来，所以未终结时返回 409，请先调用取消。
+        重复调用是幂等的。
+      responses:
+        '204': { description: 已移除 }
+        '409':
+          description: 任务尚未终结
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/tasks/{taskId}/cancel:
     parameters:

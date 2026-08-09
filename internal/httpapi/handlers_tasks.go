@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aigc-pool/aigc-pool/internal/capability"
 	"github.com/aigc-pool/aigc-pool/internal/domain"
@@ -326,6 +327,46 @@ func (s *server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+// handleDismissTask 兑现 DELETE /api/tasks/{taskId}：把任务从用户自己的
+// 任务流里收起来。
+//
+// **不是真删**。credit_ledger.task_id 指向 tasks，账本是 append-only 的真相；
+// 用户按下「移除」想要的也不是销毁审计记录，而是别再让这张卡占着自己的任务流。
+// 产物不受影响——删产物是资产库那边的 DELETE /api/assets/{id}。
+//
+// 只收终态任务。还在跑的任务被收起来之后 SSE 照样推它的进度事件，
+// 用户会看到一张刚删掉的卡片又冒出来，所以这里让调用方先取消再移除。
+func (s *server) handleDismissTask(w http.ResponseWriter, r *http.Request) {
+	id, err := identity(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	taskID, err := pathID(r, "taskId")
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	t, err := s.deps.Tasks.Get(r.Context(), taskID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := requireOwner(id, t.UserID, "任务"); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !t.Status.IsTerminal() {
+		writeError(w, r, errConflict("任务还在进行中（%s），请先取消再移除", t.Status))
+		return
+	}
+	if err := s.deps.Tasks.Dismiss(r.Context(), t.ID, time.Now()); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // cancelTask 取消一条任务并退回冻结积分。用户端与管理端共用。

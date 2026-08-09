@@ -126,7 +126,8 @@ func (f *fakeTasks) ListActive(context.Context, string) ([]domain.Task, error) {
 func (f *fakeTasks) CountRunningByModel(context.Context, string, string) (int, error) {
 	return 0, nil
 }
-func (f *fakeTasks) Requeue(context.Context, string) error { return nil }
+func (f *fakeTasks) Requeue(context.Context, string) error            { return nil }
+func (f *fakeTasks) Dismiss(context.Context, string, time.Time) error { return nil }
 func (f *fakeTasks) Stats(context.Context, time.Duration, string) (domain.TaskStats, error) {
 	return domain.TaskStats{}, nil
 }

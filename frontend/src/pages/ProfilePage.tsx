@@ -87,14 +87,10 @@ export function ProfilePage() {
     }
   }
 
-  async function logout(): Promise<void> {
-    try {
-      await api.logout();
-    } finally {
-      signOut();
-      qc.clear();
-      navigate('/login', { replace: true });
-    }
+  function logout(): void {
+    signOut();
+    qc.clear();
+    navigate('/login', { replace: true });
   }
 
   const usedRatio = me ? Math.min(1, me.storage_used / Math.max(me.storage_quota, 1)) : 0;
@@ -205,7 +201,7 @@ export function ProfilePage() {
 
           <div className="panel">
             <h3>账号</h3>
-            <button type="button" className="btn" style={{ width: '100%' }} onClick={() => void logout()}>
+            <button type="button" className="btn" style={{ width: '100%' }} onClick={logout}>
               退出登录
             </button>
           </div>

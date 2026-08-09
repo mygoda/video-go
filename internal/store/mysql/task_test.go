@@ -206,6 +206,72 @@ func TestTaskRepoRequeue(t *testing.T) {
 	requireCode(t, repo.Requeue(ctx, uid.New()), domain.CodeNotFound)
 }
 
+// TestTaskRepoDismiss 钉住 DELETE /api/tasks/{id} 的存储侧语义：
+// 任务从用户列表里消失，但行还在、账还在、管理端还看得见。
+func TestTaskRepoDismiss(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	repo := NewTaskRepo(db)
+	f := newFixture(t, 100, 1<<30)
+	task := f.newTask(t, 3)
+	now := time.Now().UTC()
+
+	// 还在跑的任务不能被收起来：SSE 会把它的进度事件继续推给前端，
+	// 用户会看到一张刚删掉的卡片又冒出来。
+	requireCode(t, repo.Dismiss(ctx, task.ID, now), domain.CodeConflict)
+
+	requireNoErr(t, repo.UpdateStatus(ctx, task.ID, domain.TaskStatusQueued, domain.TaskStatusCanceled, nil),
+		"cancel task")
+	requireNoErr(t, repo.Dismiss(ctx, task.ID, now), "dismiss task")
+
+	// 连点两下移除是幂等的，不是 409。
+	requireNoErr(t, repo.Dismiss(ctx, task.ID, now), "dismiss again")
+
+	// 行还在：Get 仍然拿得到，账本外键不会悬空。
+	if _, err := repo.Get(ctx, task.ID); err != nil {
+		t.Fatalf("dismissed task disappeared from the table: %v", err)
+	}
+
+	// 用户列表看不到。
+	page, err := repo.List(ctx, domain.TaskFilter{UserID: f.userID, Limit: 100})
+	requireNoErr(t, err, "list tasks")
+	for _, got := range page.Items {
+		if got.ID == task.ID {
+			t.Fatalf("dismissed task %s still shows up in the user's feed", task.ID)
+		}
+	}
+
+	// 管理端看得到——用户收起一张失败卡片，不该让那条任务从排查视野里消失。
+	page, err = repo.List(ctx, domain.TaskFilter{UserID: f.userID, Limit: 100, IncludeDismissed: true})
+	requireNoErr(t, err, "list tasks including dismissed")
+	found := false
+	for _, got := range page.Items {
+		if got.ID == task.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("IncludeDismissed did not bring task %s back; admin loses sight of it", task.ID)
+	}
+
+	// 管理员重跑一条已收起的任务，卡片要回到用户视野，否则产物落进一个
+	// 用户看不见的角落。
+	requireNoErr(t, repo.Requeue(ctx, task.ID), "requeue dismissed task")
+	page, err = repo.List(ctx, domain.TaskFilter{UserID: f.userID, Limit: 100})
+	requireNoErr(t, err, "list tasks after requeue")
+	found = false
+	for _, got := range page.Items {
+		if got.ID == task.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("requeued task %s is still hidden from its owner", task.ID)
+	}
+
+	requireCode(t, repo.Dismiss(ctx, uid.New(), now), domain.CodeNotFound)
+}
+
 // TestTaskRepoListAndActive 钉住列表分页与 ListActive 的不分页语义。
 func TestTaskRepoListAndActive(t *testing.T) {
 	db := requireDB(t)

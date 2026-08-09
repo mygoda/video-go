@@ -170,14 +170,18 @@ func (s *server) handleAdminUserLedger(w http.ResponseWriter, r *http.Request) {
 //
 // 与用户侧 GET /api/tasks 的唯一区别是不强制按 user_id 过滤——
 // 同一个 TaskFilter、同一个仓储方法，管理端只是少加一个条件。
+//
+// IncludeDismissed 恒为 true：用户把一张失败卡片收起来，不该让那条任务
+// 从故障排查视野里消失。
 func (s *server) handleAdminListTasks(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	cursor, limit := pagination(r)
 	f := domain.TaskFilter{
-		UserID:  q.Get("user_id"),
-		ModelID: q.Get("model_id"),
-		Cursor:  cursor,
-		Limit:   limit,
+		UserID:           q.Get("user_id"),
+		ModelID:          q.Get("model_id"),
+		Cursor:           cursor,
+		Limit:            limit,
+		IncludeDismissed: true,
 	}
 	if v := q.Get("status"); v != "" {
 		for _, raw := range strings.Split(v, ",") {

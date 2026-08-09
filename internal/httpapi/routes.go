@@ -51,6 +51,8 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/tasks", user(s.handleListTasks))
 	mux.Handle("GET /api/tasks/{taskId}", user(s.handleGetTask))
 	mux.Handle("POST /api/tasks/{taskId}/cancel", user(s.handleCancelTask))
+	// DELETE 是「从我的任务流里移掉」，不是删记录——见 handleDismissTask。
+	mux.Handle("DELETE /api/tasks/{taskId}", user(s.handleDismissTask))
 
 	// ── 资产 ────────────────────────────────────────────────────
 	mux.Handle("GET /api/assets", user(s.handleListAssets))

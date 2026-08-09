@@ -237,6 +237,11 @@ func taskFilterSQL(f domain.TaskFilter) (where []string, args []any) {
 		where = append(where, `t.error_code = ?`)
 		args = append(args, string(f.ErrorCode))
 	}
+	// 默认藏起被用户移除的任务。管理端显式置 IncludeDismissed=true——
+	// 用户把一张失败卡片收起来，不该让那条任务从故障排查视野里消失。
+	if !f.IncludeDismissed {
+		where = append(where, `t.dismissed_at IS NULL`)
+	}
 	return where, args
 }
 
@@ -553,6 +558,9 @@ func (r *taskRepo) SetActualCost(ctx context.Context, id string, actual int) err
 // 同时清掉上一轮的执行痕迹（错误、租约、上游引用、完成时刻），只保留
 // attempt 计数：那是"这条任务一共折腾了几次"的审计信息，清掉就看不出
 // 一条任务是不是在反复失败。
+//
+// dismissed_at 一并清掉：管理员重跑一条用户已经收起来的任务，产物会照常
+// 落到那个用户名下，卡片却还藏着，等于把结果送进一个用户看不见的角落。
 func (r *taskRepo) Requeue(ctx context.Context, id string) error {
 	if err := requireID("task id", id); err != nil {
 		return err
@@ -571,7 +579,8 @@ func (r *taskRepo) Requeue(ctx context.Context, id string) error {
 		  lease_owner         = NULL,
 		  lease_expires_at    = NULL,
 		  started_at          = NULL,
-		  finished_at         = NULL
+		  finished_at         = NULL,
+		  dismissed_at        = NULL
 		WHERE id = ? AND status IN ('succeeded','failed','canceled')`
 
 	res, err := r.db.ExecContext(ctx, q, id)
@@ -594,6 +603,55 @@ func (r *taskRepo) Requeue(ctx context.Context, id string) error {
 		return wrap("read task status", err)
 	}
 	return conflict("task "+id+" is "+actual+" and is not in a terminal state", nil)
+}
+
+// Dismiss 把任务从用户自己的任务流里收起来（DELETE /api/tasks/{id}）。
+//
+// **不删行**：credit_ledger.task_id 指向 tasks，流水是 append-only 的真相，
+// 余额只是它的物化缓存。为了让一张卡片消失而砸掉账目不是一笔划算的交易。
+//
+// 只允许终态任务被收起来。一条 running 的任务被藏起来之后，它的 SSE 事件
+// 还会照常推给前端，用户会看到一张自己刚刚删掉的卡片重新冒出来——
+// 与其让状态机和 UI 在这里打架，不如让调用方先取消再移除。
+func (r *taskRepo) Dismiss(ctx context.Context, id string, at time.Time) error {
+	if err := requireID("task id", id); err != nil {
+		return err
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	const q = `UPDATE tasks SET dismissed_at = ?
+		WHERE id = ? AND status IN ('succeeded','failed','canceled')`
+
+	res, err := r.db.ExecContext(ctx, q, at.UTC(), id)
+	if err != nil {
+		return wrap("dismiss task", err)
+	}
+	n, err := affected(res, "dismiss task")
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+
+	// 0 行有三种可能：任务不存在、任务还没进终态、任务已经被收起来过。
+	// 第三种是幂等重放（用户连点两下移除），返回成功；前两种要分辨开。
+	var (
+		actual    string
+		dismissed sql.NullTime
+	)
+	switch err := r.db.QueryRowContext(ctx,
+		`SELECT status, dismissed_at FROM tasks WHERE id = ?`, id).Scan(&actual, &dismissed); {
+	case isNoRows(err):
+		return notFound("task", id)
+	case err != nil:
+		return wrap("read task status", err)
+	}
+	if dismissed.Valid {
+		return nil
+	}
+	return conflict("task "+id+" is "+actual+" and cannot be dismissed before it finishes", nil)
 }
 
 // Stats 汇总统计窗口内的任务表现，供管理端监控。

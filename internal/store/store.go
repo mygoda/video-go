@@ -104,6 +104,10 @@ type TaskRepo interface {
 	// **不动 estimated_cost、不重新冻结积分**：原来那笔 hold 还在，
 	// 重新冻结会在余额已被别的任务占满时把一条本可重试的任务卡死。
 	Requeue(ctx context.Context, id string) error
+	// Dismiss 把任务从用户自己的任务流里收起来（DELETE /api/tasks/{id}）。
+	// **不删行**：credit_ledger 指向 tasks，流水是 append-only 的真相，
+	// 为了让一张卡片消失而破坏账目不是一笔划算的交易。
+	Dismiss(ctx context.Context, id string, at time.Time) error
 	// Stats 汇总统计窗口内的任务表现，供管理端监控。
 	Stats(ctx context.Context, window time.Duration, label string) (domain.TaskStats, error)
 }

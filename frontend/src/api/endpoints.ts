@@ -37,7 +37,8 @@ export const api = {
   register: (username: string, password: string) =>
     request<AuthResponse>('/auth/register', { method: 'POST', body: { username, password } }),
 
-  logout: () => request<void>('/auth/logout', { method: 'POST' }),
+  // 没有 logout：JWT 是无状态的，服务端没有可作废的会话。
+  // 退出登录 = 前端丢掉 token 并清空查询缓存，见 ProfilePage。
 
   me: () => request<Me>('/me'),
 

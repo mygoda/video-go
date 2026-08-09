@@ -288,12 +288,6 @@ export async function mockHandle(
     return ok({ ok: true });
   }
 
-  if (path === '/auth/logout' && method === 'POST') {
-    if (token) delete db.sessions[token];
-    save();
-    return ok({ ok: true });
-  }
-
   if (path === '/uploads' && method === 'POST') {
     const id = uid('up');
     const dataUrl = typeof body?.data_url === 'string' ? body.data_url : artUrl(id, 256, 256);
