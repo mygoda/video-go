@@ -13,6 +13,7 @@ import { toast } from '@/stores/toast';
 const MODALITY_LABEL: Record<Task['modality'], string> = {
   image: '图片生成',
   video: '视频生成',
+  text: '文本生成',
 };
 
 /** 只有这几个 code 有专门文案，其余走不带后缀的「任务失败退回」，免得出现「退回 · 生成失败」这种绕口话 */

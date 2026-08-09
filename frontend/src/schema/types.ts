@@ -23,8 +23,13 @@ export interface ModelCapabilitySchema {
   name: string;
   /** 供应商，仅用于展示与故障提示（"该供应商暂时不可用"）。前端禁止按此分支 */
   vendor: string;
-  /** 决定归入哪个 tab。前端 tab 结构固定为 image / video 两个 */
-  modality: 'image' | 'video';
+  /**
+   * 决定归入哪个 tab。前端 tab 结构固定为 image / video 两个。
+   * text 没有对应的 tab：chat 族模型是分镜拆解这类平台内部能力的载体，
+   * 不是用户能在创作页选的产品，用户端目录里也不会出现（后端按 visibility 摘掉）。
+   * 它出现在这个联合类型里，只为管理端能如实显示与编辑。
+   */
+  modality: 'image' | 'video' | 'text';
   /** false 时在选择器中置灰并显示 disabled_reason */
   enabled: boolean;
   disabled_reason?: string;

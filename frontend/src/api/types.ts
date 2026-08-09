@@ -85,7 +85,8 @@ export interface Task {
   id: string;
   status: TaskStatus;
   model_id: string;
-  modality: 'image' | 'video';
+  /** text 是分镜拆解这类平台内部任务，用户不会主动提交，但它会出现在任务列表里 */
+  modality: 'image' | 'video' | 'text';
   prompt: string;
   params: Record<string, JsonValue>;
   /** 后端不回显任务的输入槽，只在提交时用得上 */

@@ -47,8 +47,10 @@ func (v validator) ValidateSchema(schema ModelCapabilitySchema) []domain.FieldEr
 	if strings.TrimSpace(schema.Name) == "" {
 		errs = append(errs, domain.FieldError{Key: "name", Message: "模型名称不能为空"})
 	}
-	if schema.Modality != domain.ModalityImage && schema.Modality != domain.ModalityVideo {
-		errs = append(errs, domain.FieldError{Key: "modality", Message: "modality 只能是 image 或 video"})
+	switch schema.Modality {
+	case domain.ModalityImage, domain.ModalityVideo, domain.ModalityText:
+	default:
+		errs = append(errs, domain.FieldError{Key: "modality", Message: "modality 只能是 image、video 或 text"})
 	}
 	if !schema.Enabled && strings.TrimSpace(schema.DisabledReason) == "" {
 		errs = append(errs, domain.FieldError{Key: "disabled_reason", Message: "禁用的模型必须给出 disabled_reason，否则前端只能置灰而说不出原因"})
