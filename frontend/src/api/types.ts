@@ -93,8 +93,13 @@ export interface Asset {
  * webp 解不了都会跳过），上传提升成的资产更是从来没派生过。原图当兜底比
  * 留一个空 src 强——空 src 渲染出来是一块纯色，和「这条产物是假的」
  * 在用户眼里没有区别。
+ *
+ * text 产物返回 null：它的 original 是一份 text/plain，喂给 `<img>` 必然裂图。
+ * 返回 null 而不是兜底到 original，是为了让 `<img src>` 的类型不再接受它 ——
+ * 编译期就挡住「忘了写 text 分支」，正文渲染见 AssetTextBody。
  */
-export function assetPreview(asset: Asset): string {
+export function assetPreview(asset: Asset): string | null {
+  if (asset.type === 'text') return null;
   return asset.poster ?? asset.thumb_512 ?? asset.original;
 }
 

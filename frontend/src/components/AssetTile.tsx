@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import type { Asset } from '@/api/types';
 import { assetPreview } from '@/api/types';
+import { AssetTextBody } from '@/components/AssetTextBody';
 import { formatMediaDuration } from '@/components/admin/format';
 import { useAssetActions } from '@/hooks/useAssetActions';
 
@@ -24,7 +25,12 @@ export function AssetTile({ asset, heightClass, showDelete = true, linkToDetail 
   const location = useLocation();
   const { download, adopt, sendToCanvas, remove } = useAssetActions();
 
-  const media = <img src={assetPreview(asset)} alt={asset.source.prompt} loading="lazy" />;
+  const preview = assetPreview(asset);
+  const media = preview ? (
+    <img src={preview} alt={asset.source.prompt} loading="lazy" />
+  ) : (
+    <AssetTextBody asset={asset} className="art" />
+  );
 
   const badge = asset.type === 'video' ? formatMediaDuration(asset.duration_ms) : ratioLabel(asset);
 

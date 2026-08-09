@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import type { Asset } from '@/api/types';
 import { assetPreview } from '@/api/types';
 import { useAssets, useMe } from '@/api/queries';
+import { AssetTextBody } from '@/components/AssetTextBody';
 import { formatBytes, formatMediaDuration } from '@/components/admin/format';
 import { useAuthStore } from '@/stores/auth';
 
@@ -80,29 +81,36 @@ export function AssetsPage() {
       )}
 
       <div className="masonry">
-        {page?.items.map((asset) => (
-          <Link
-            key={asset.id}
-            className="asset"
-            to={`/assets/${asset.id}`}
-            state={{ backgroundLocation: location }}
-            style={{ display: 'block' }}
-          >
-            <img
-              className={`art ${heightClass(asset)}`}
-              style={{ width: '100%', objectFit: 'cover' }}
-              src={assetPreview(asset)}
-              alt={asset.source.prompt}
-              loading="lazy"
-            />
-            {/* 静止时只有画面，hover 才出元信息 */}
-            <div className="asset-meta">
-              {asset.type === 'video' ? `▶ ${formatMediaDuration(asset.duration_ms) ?? '—'}` : asset.source.prompt}
-              <br />
-              <span className="mono">{asset.source.model_name ?? asset.source.model_id}</span>
-            </div>
-          </Link>
-        ))}
+        {page?.items.map((asset) => {
+          const preview = assetPreview(asset);
+          return (
+            <Link
+              key={asset.id}
+              className="asset"
+              to={`/assets/${asset.id}`}
+              state={{ backgroundLocation: location }}
+              style={{ display: 'block' }}
+            >
+              {preview ? (
+                <img
+                  className={`art ${heightClass(asset)}`}
+                  style={{ width: '100%', objectFit: 'cover' }}
+                  src={preview}
+                  alt={asset.source.prompt}
+                  loading="lazy"
+                />
+              ) : (
+                <AssetTextBody asset={asset} className={`art ${heightClass(asset)}`} />
+              )}
+              {/* 静止时只有画面，hover 才出元信息 */}
+              <div className="asset-meta">
+                {asset.type === 'video' ? `▶ ${formatMediaDuration(asset.duration_ms) ?? '—'}` : asset.source.prompt}
+                <br />
+                <span className="mono">{asset.source.model_name ?? asset.source.model_id}</span>
+              </div>
+            </Link>
+          );
+        })}
       </div>
 
       {page?.next_cursor && (

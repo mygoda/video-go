@@ -3,6 +3,7 @@ import type { CanvasCard, Task } from '@/api/types';
 import { assetPreview } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { useTasks } from '@/api/queries';
+import { AssetTextBody } from '@/components/AssetTextBody';
 import { displayProgress } from '@/components/task/failure';
 import { cardTitle } from './cardTitle';
 
@@ -50,6 +51,9 @@ export function CanvasCardView({
   const { data: asset } = useAsset(card.asset_id, wantsMedia);
   const { data: tasks } = useTasks();
   const pending = runningTask(tasks, card.task_id);
+  // text 产物没有可预览的画面，assetPreview 会给 null；卡片 kind 是建卡时定的，
+  // 挡不住一张 image 卡上挂着一件 text 资产，所以判据取资产本身。
+  const preview = asset ? assetPreview(asset) : null;
 
   const className = [
     'canvas-card',
@@ -101,17 +105,19 @@ export function CanvasCardView({
         </div>
       ) : !wantsMedia || !asset ? (
         <div className="art media" />
+      ) : !preview ? (
+        <AssetTextBody asset={asset} className="media" />
       ) : card.kind === 'video' ? (
         // <video> 很贵：只在放得够大且在视口里才真的挂上去
         k >= 0.6 ? (
           <video className="media" src={asset.original} poster={asset.poster ?? undefined} controls playsInline preload="none" />
         ) : (
-          <img className="media" src={assetPreview(asset)} alt={cardTitle(card)} style={{ objectFit: 'cover' }} />
+          <img className="media" src={preview} alt={cardTitle(card)} style={{ objectFit: 'cover' }} />
         )
       ) : (
         <img
           className="media"
-          src={k >= 1 ? asset.original : assetPreview(asset)}
+          src={k >= 1 ? asset.original : preview}
           alt={card.prompt ?? cardTitle(card)}
           style={{ objectFit: 'cover' }}
         />

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/endpoints';
+import { AssetTextBody } from '@/components/AssetTextBody';
 import { formatMediaDuration } from '@/components/admin/format';
 import { useAssetActions } from '@/hooks/useAssetActions';
 
@@ -44,6 +45,8 @@ export function AssetModal({ standalone }: { standalone?: boolean }) {
       <div className="modal-media">
         {asset.type === 'video' ? (
           <video src={asset.original} poster={asset.poster ?? undefined} controls playsInline />
+        ) : asset.type === 'text' ? (
+          <AssetTextBody asset={asset} />
         ) : (
           <img src={asset.original} alt={asset.source.prompt} />
         )}
