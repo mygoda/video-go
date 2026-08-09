@@ -2,8 +2,16 @@ import type { ApiErrorBody, TaskError } from './types';
 import { getToken, setToken } from './token';
 import { mockHandle } from '@/mock/backend';
 
-/** 离线开发模式，必须显式 VITE_USE_MOCK=true 才启用；缺省与任何其他取值都走真后端 */
-export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true';
+/**
+ * 离线开发模式，必须在 dev 下显式 VITE_USE_MOCK=true 才启用；
+ * 缺省与任何其他取值都走真后端。
+ *
+ * 前面那半个 import.meta.env.DEV 不是保险丝，是熔断：生产构建里它是编译期常量
+ * false，整个 mockHandle 分支连同 @/mock/backend 会被摇掉，产物里一个字节的假
+ * 后端都不剩。少了它，构建时手滑一个环境变量就能把一整个假 App 发上线——
+ * 那正是「用户端不许再看到 mock」这条线最容易被绕过的地方。
+ */
+export const USE_MOCK = import.meta.env.DEV && import.meta.env.VITE_USE_MOCK === 'true';
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
 export class ApiError extends Error {
