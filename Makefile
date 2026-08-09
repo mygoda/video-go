@@ -2,7 +2,7 @@ BINARY  := aigcd
 BIN_DIR := bin
 PKG     := ./...
 
-.PHONY: build run vet test smoke db-up db-down migrate-up migrate-down seed dev clean
+.PHONY: build run vet test smoke health db-up db-down migrate-up migrate-down seed dev clean
 
 build:
 	go build -o $(BIN_DIR)/$(BINARY) ./cmd/aigcd
@@ -21,6 +21,12 @@ test:
 # 目标地址取 AIGC_SMOKE_BASE_URL，默认 http://localhost:18080。
 smoke:
 	go run ./scripts/smoke
+
+# health 只盯上线前会要命、且代码没改也会漂移的四件事：用户端目录里有没有
+# mock/假上游模型、前端调的端点后端有没有、图片与视频主流程是不是真跑得通。
+# 与 smoke 一样打的是另一台已经在跑的服务。
+health:
+	go run ./scripts/healthcheck
 
 # ── 本地依赖 ─────────────────────────────────────────────────────────
 # db-up 拉起本地 MySQL 8.4。docker-compose.yml 里的口令是明摆着的开发占位符，
