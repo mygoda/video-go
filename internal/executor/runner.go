@@ -408,12 +408,13 @@ func (s *Service) finish(ctx context.Context, task domain.Task, refs []adapter.A
 //
 // 派生出的键要回填进入参切片：紧随其后的 task.succeeded 事件按这几个键投影
 // URL，不回填的话事件里没有缩略图、REST 拉同一条任务却有——前端两边对不上。
+// 视频的宽高时长同理，由 Derive 直接写回切片元素（它收指针就是为了这个）。
 func (s *Service) derive(ctx context.Context, assets []domain.Asset) {
 	if s.deps.Deriver == nil {
 		return
 	}
 	for i := range assets {
-		variants, err := s.deps.Deriver.Derive(context.WithoutCancel(ctx), assets[i])
+		variants, err := s.deps.Deriver.Derive(context.WithoutCancel(ctx), &assets[i])
 		if err != nil {
 			s.log.Warn("生成派生规格失败，资产仍然有效", "asset_id", assets[i].ID, "err", err)
 		}

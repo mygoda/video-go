@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { CanvasCard, Task } from '@/api/types';
+import { assetPreview } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { useTasks } from '@/api/queries';
 import { displayProgress } from '@/components/task/failure';
@@ -103,14 +104,14 @@ export function CanvasCardView({
       ) : card.kind === 'video' ? (
         // <video> 很贵：只在放得够大且在视口里才真的挂上去
         k >= 0.6 ? (
-          <video className="media" src={asset.original} poster={asset.poster} controls playsInline preload="none" />
+          <video className="media" src={asset.original} poster={asset.poster ?? undefined} controls playsInline preload="none" />
         ) : (
-          <img className="media" src={asset.poster ?? asset.thumb_512} alt={cardTitle(card)} style={{ objectFit: 'cover' }} />
+          <img className="media" src={assetPreview(asset)} alt={cardTitle(card)} style={{ objectFit: 'cover' }} />
         )
       ) : (
         <img
           className="media"
-          src={k >= 1 ? asset.original : asset.thumb_512}
+          src={k >= 1 ? asset.original : assetPreview(asset)}
           alt={card.prompt ?? cardTitle(card)}
           style={{ objectFit: 'cover' }}
         />

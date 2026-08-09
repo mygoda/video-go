@@ -155,6 +155,12 @@ type AssetRepo interface {
 	// 且允许失败（见 asset.Deriver），因此它不能挤进 Create 的参数里——
 	// 那会逼着调用方在缩略图还没生成时就把 asset 攥在手上不落库。
 	SetVariants(ctx context.Context, assetID string, thumbKey, posterKey *string) error
+	// SetMedia 补写宽高与时长。视频的这三项要解开容器才知道，而解容器与抽封面帧
+	// 是同一步（见 asset.Deriver），因此它与 SetVariants 一样发生在 Create 之后。
+	// 传 nil 表示"这一项仍然不知道"，对应的列保持原样而不是被抹成 NULL。
+	SetMedia(ctx context.Context, assetID string, width, height, durationMS *int) error
+	// ListMissingMedia 列出宽高（视频还包括时长）仍然缺失的资产，供回填任务补写。
+	ListMissingMedia(ctx context.Context, limit int) ([]domain.Asset, error)
 	// ListSoftDeleted 列出软删早于 before 的资产，供 admin 清理任务回收字节。
 	ListSoftDeleted(ctx context.Context, before time.Time, limit int) ([]domain.Asset, error)
 	// HardDelete 物理删除一条资产记录（连同其血缘边由外键级联）。

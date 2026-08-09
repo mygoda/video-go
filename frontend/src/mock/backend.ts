@@ -118,7 +118,7 @@ function makeAssets(task: Task, model: ModelCapabilitySchema): Asset[] {
         poster: artUrl(seed, 1280, 720),
         width: 1280,
         height: 720,
-        duration_seconds: Number(task.params.duration ?? 5),
+        duration_ms: Number(task.params.duration ?? 5) * 1000,
         created_at: new Date().toISOString(),
         source: {
           model_id: task.model_id,

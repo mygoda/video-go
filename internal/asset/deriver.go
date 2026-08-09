@@ -3,6 +3,7 @@ package asset
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -10,6 +11,8 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"io"
+	"math"
+	"strconv"
 
 	// image.Decode 靠这两个包的 init 注册解码器。不 import 就只会得到
 	// "unknown format"，而 PNG 是 AI 出图最常见的格式。
@@ -38,6 +41,9 @@ const thumbJPEGQuality = 82
 // 也不能让它拖住任务的收尾。
 const posterTimeout = 30 * time.Second
 
+// probeTimeout 是读容器元信息的时间上限。ffprobe 只读文件头，比抽帧还轻。
+const probeTimeout = 15 * time.Second
+
 // maxDecodePixels 是解码缩略图源图的像素上限。
 //
 // 没有它，一张声称 50000x50000 的 PNG 会在解码时申请几十 GB 内存把进程打死
@@ -55,17 +61,21 @@ type DeriverDeps struct {
 	// FFmpegPath 指定 ffmpeg 可执行文件；为空时从 PATH 查找。
 	// 找不到时视频不生成 poster——这是明确的降级路径，不是错误。
 	FFmpegPath string
-	Logger     *slog.Logger
-	Now        func() time.Time
+	// FFprobePath 指定 ffprobe 可执行文件；为空时先看 ffmpeg 的同目录，再查 PATH。
+	// 找不到时视频的宽高与时长留空，同样是降级而不是错误。
+	FFprobePath string
+	Logger      *slog.Logger
+	Now         func() time.Time
 }
 
 // deriver 是 Deriver 的默认实现。
 type deriver struct {
-	blobs  Store
-	assets store.AssetRepo
-	ffmpeg string
-	log    *slog.Logger
-	now    func() time.Time
+	blobs   Store
+	assets  store.AssetRepo
+	ffmpeg  string
+	ffprobe string
+	log     *slog.Logger
+	now     func() time.Time
 }
 
 // NewDeriver 组装一个派生器。
@@ -78,11 +88,12 @@ func NewDeriver(d DeriverDeps) (Deriver, error) {
 		return nil, fmt.Errorf("asset: DeriverDeps.Blobs 不能为空")
 	}
 	dv := &deriver{
-		blobs:  d.Blobs,
-		assets: d.Assets,
-		ffmpeg: d.FFmpegPath,
-		log:    d.Logger,
-		now:    d.Now,
+		blobs:   d.Blobs,
+		assets:  d.Assets,
+		ffmpeg:  d.FFmpegPath,
+		ffprobe: d.FFprobePath,
+		log:     d.Logger,
+		now:     d.Now,
 	}
 	if dv.log == nil {
 		dv.log = slog.Default()
@@ -97,7 +108,31 @@ func NewDeriver(d DeriverDeps) (Deriver, error) {
 			dv.log.Info("PATH 上没有 ffmpeg，视频将不生成封面帧")
 		}
 	}
+	if dv.ffprobe == "" {
+		dv.ffprobe = lookProbe(dv.ffmpeg)
+		if dv.ffprobe == "" {
+			dv.log.Info("PATH 上没有 ffprobe，视频的宽高与时长将留空")
+		}
+	}
 	return dv, nil
+}
+
+// lookProbe 找 ffprobe：先看 ffmpeg 的同目录，再查 PATH。
+//
+// 同目录优先是因为这两个可执行文件同属一个 ffmpeg 发行版，版本必须配套；
+// 而一台机器上装了两份 ffmpeg（brew 一份、手动解压一份）时，先查 PATH
+// 会把 A 的 ffmpeg 和 B 的 ffprobe 配到一起。
+func lookProbe(ffmpeg string) string {
+	if ffmpeg != "" {
+		sibling := filepath.Join(filepath.Dir(ffmpeg), "ffprobe")
+		if info, err := os.Stat(sibling); err == nil && !info.IsDir() {
+			return sibling
+		}
+	}
+	if p, err := exec.LookPath("ffprobe"); err == nil {
+		return p
+	}
+	return ""
 }
 
 // Derive 为一件资产生成全部适用的派生规格，并把结果写回 assets 行。
@@ -106,50 +141,194 @@ func NewDeriver(d DeriverDeps) (Deriver, error) {
 // 此刻已经安全落地了；为了一张缩略图把任务判失败要退款、要让用户重跑一次
 // 真实生成，代价完全不对等。失败只记日志，前端回退到原图。
 //
-// 返回的 error 只可能来自 SetVariants——那说明数据库出了问题，
+// 视频顺带补上宽高与时长：这三项上游多半不报（GPUGeek 就不报），而它们
+// 只有解开容器才知道——而解容器正是抽封面帧那一步已经在做的事。不补的话，
+// 资产库里每条视频都是「▶ 0s」，瀑布流也拿不到宽高比只能退回统一行高。
+//
+// 入参是指针：补出来的宽高时长要回填给调用方。紧随其后的 task.succeeded
+// 事件按这个结构体投影，不回填的话事件里没有尺寸、REST 拉同一条却有。
+//
+// 返回的 error 只可能来自落库——那说明数据库出了问题，
 // 调用方需要知道，但它同样不该让任务失败（调用方按注释里的约定吞掉它）。
-func (d *deriver) Derive(ctx context.Context, a domain.Asset) (map[Variant]string, error) {
+func (d *deriver) Derive(ctx context.Context, a *domain.Asset) (map[Variant]string, error) {
 	out := make(map[Variant]string, 2)
 
 	var posterKey *string
-	if a.Type == domain.AssetTypeVideo {
-		key, err := d.Poster(ctx, a)
-		switch {
-		case err == nil && key != "":
-			out[VariantPoster] = key
-			k := key
-			posterKey = &k
-		case errors.Is(err, errUnsupported):
-			// ffmpeg 不在，属于已知降级，不必每条任务都吼一遍。
-			d.log.Debug("跳过封面帧", "asset_id", a.ID, "reason", err)
-		case err != nil:
-			d.log.Warn("生成封面帧失败，资产仍然有效", "asset_id", a.ID, "err", err)
+	var probed bool
+	if a.Type == domain.AssetTypeVideo && (d.ffmpeg != "" || d.ffprobe != "") {
+		// ffmpeg 与 ffprobe 都要一个可 seek 的输入（管道喂 mp4 常常读不到
+		// moov box），而它们读的是同一个文件——落一次临时文件给两个人用。
+		tmp, err := d.spillToTemp(ctx, a.StorageKey)
+		if err != nil {
+			d.log.Warn("落地视频临时文件失败，跳过封面帧与元信息", "asset_id", a.ID, "err", err)
+		} else {
+			defer func() { _ = os.Remove(tmp) }()
+			probed = d.fillVideoMeta(ctx, a, tmp)
+
+			key, err := d.posterFrom(ctx, *a, tmp)
+			switch {
+			case err == nil && key != "":
+				out[VariantPoster] = key
+				k := key
+				posterKey = &k
+			case errors.Is(err, ErrUnsupported):
+				// ffmpeg 不在，属于已知降级，不必每条任务都吼一遍。
+				d.log.Debug("跳过封面帧", "asset_id", a.ID, "reason", err)
+			case err != nil:
+				d.log.Warn("生成封面帧失败，资产仍然有效", "asset_id", a.ID, "err", err)
+			}
 		}
 	}
 
 	// 视频的缩略图从封面帧缩，而不是再抽一次帧：抽帧是这两步里唯一昂贵的部分。
-	thumbSrc := a
+	thumbSrc := *a
 	if posterKey != nil {
 		thumbSrc.StorageKey = *posterKey
 		thumbSrc.MIME = "image/jpeg"
 	}
 
 	var thumbKey *string
-	if key, err := d.thumbnailFrom(ctx, a, thumbSrc); err == nil && key != "" {
+	if key, err := d.thumbnailFrom(ctx, *a, thumbSrc); err == nil && key != "" {
 		out[VariantThumb512] = key
 		k := key
 		thumbKey = &k
-	} else if err != nil && !errors.Is(err, errUnsupported) {
+	} else if err != nil && !errors.Is(err, ErrUnsupported) {
 		d.log.Warn("生成缩略图失败，资产仍然有效", "asset_id", a.ID, "err", err)
 	}
 
-	if d.assets == nil || (thumbKey == nil && posterKey == nil) {
+	if d.assets == nil {
+		return out, nil
+	}
+	if probed {
+		if err := d.assets.SetMedia(ctx, a.ID, a.Width, a.Height, a.DurationMS); err != nil {
+			return out, fmt.Errorf("asset: 落库资产 %s 的宽高时长: %w", a.ID, err)
+		}
+	}
+	if thumbKey == nil && posterKey == nil {
 		return out, nil
 	}
 	if err := d.assets.SetVariants(ctx, a.ID, thumbKey, posterKey); err != nil {
 		return out, fmt.Errorf("asset: 落库资产 %s 的派生规格: %w", a.ID, err)
 	}
 	return out, nil
+}
+
+// FillMeta 为一件已经落库的资产补上缺失的宽高与时长，并写回 assets 行。
+//
+// 它是 Derive 的补课通道：Derive 只在生成的当下跑一次，而库里躺着的历史资产
+// 是在这条路铺好之前落的。图片走字节解码、视频走 ffprobe，判据与 Derive 完全
+// 一致——两条路分叉的话，回填出来的数据会和新产物对不上。
+func (d *deriver) FillMeta(ctx context.Context, a *domain.Asset) (bool, error) {
+	var changed bool
+	switch a.Type {
+	case domain.AssetTypeImage:
+		changed = fillImageSize(ctx, d.blobs, d.log, a)
+	case domain.AssetTypeVideo:
+		if d.ffprobe == "" {
+			return false, fmt.Errorf("%w: PATH 上没有 ffprobe", ErrUnsupported)
+		}
+		tmp, err := d.spillToTemp(ctx, a.StorageKey)
+		if err != nil {
+			return false, err
+		}
+		defer func() { _ = os.Remove(tmp) }()
+		changed = d.fillVideoMeta(ctx, a, tmp)
+	default:
+		return false, fmt.Errorf("%w: %s 没有宽高时长", ErrUnsupported, a.Type)
+	}
+
+	if !changed || d.assets == nil {
+		return changed, nil
+	}
+	if err := d.assets.SetMedia(ctx, a.ID, a.Width, a.Height, a.DurationMS); err != nil {
+		return false, fmt.Errorf("asset: 落库资产 %s 的宽高时长: %w", a.ID, err)
+	}
+	return true, nil
+}
+
+// fillVideoMeta 把容器里的宽高与时长补进资产，返回是否补上了新东西。
+//
+// 逐项补而不是整体替换：上游报了宽高但没报时长（或反过来）是常见情形，
+// 把上游给过的值覆盖掉没有好处——它比我们从文件里读的更接近"上游眼中的产物"。
+//
+// 探测失败只记日志：这三项是排版用的，不值得让一次成功的生成挂掉。
+func (d *deriver) fillVideoMeta(ctx context.Context, a *domain.Asset, path string) bool {
+	if d.ffprobe == "" || (a.Width != nil && a.Height != nil && a.DurationMS != nil) {
+		return false
+	}
+	m, err := d.probe(ctx, path)
+	if err != nil {
+		d.log.Warn("读不出视频元信息，宽高时长留空", "asset_id", a.ID, "err", err)
+		return false
+	}
+
+	changed := false
+	if a.Width == nil && m.Width > 0 {
+		w := m.Width
+		a.Width, changed = &w, true
+	}
+	if a.Height == nil && m.Height > 0 {
+		h := m.Height
+		a.Height, changed = &h, true
+	}
+	if a.DurationMS == nil && m.DurationMS > 0 {
+		ms := m.DurationMS
+		a.DurationMS, changed = &ms, true
+	}
+	return changed
+}
+
+// videoMeta 是 ffprobe 报回来的容器元信息。
+type videoMeta struct {
+	Width      int
+	Height     int
+	DurationMS int
+}
+
+// probe 用 ffprobe 读第一条视频流的宽高与容器时长。
+//
+// 时长取 format 而不是 stream：不少编码器不给视频流写 duration，
+// 而 format 那一层几乎总是有的（它是 moov box 里的 mvhd 时长）。
+func (d *deriver) probe(ctx context.Context, path string) (videoMeta, error) {
+	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	var out, stderr bytes.Buffer
+	cmd := exec.CommandContext(cctx, d.ffprobe,
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=width,height:format=duration",
+		"-of", "json",
+		path,
+	)
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return videoMeta{}, fmt.Errorf("ffprobe: %w (%s)", err, truncate(stderr.String(), 200))
+	}
+
+	var raw struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		return videoMeta{}, fmt.Errorf("解析 ffprobe 输出: %w", err)
+	}
+
+	var m videoMeta
+	if len(raw.Streams) > 0 {
+		m.Width, m.Height = raw.Streams[0].Width, raw.Streams[0].Height
+	}
+	// duration 是秒，带小数（"4.041667"）。N/A 与空串解不出来，当作没有。
+	if secs, err := strconv.ParseFloat(raw.Format.Duration, 64); err == nil && secs > 0 {
+		m.DurationMS = int(math.Round(secs * 1000))
+	}
+	return m, nil
 }
 
 // Thumbnail 生成长边 Thumb512MaxEdge 的缩略图并返回其存储键。
@@ -167,7 +346,7 @@ func (d *deriver) thumbnailFrom(ctx context.Context, a, src domain.Asset) (strin
 	}
 	if !decodableImage(src.MIME) {
 		// 只用标准库，因此 webp / avif 这些解不了。
-		return "", fmt.Errorf("%w: 无法解码 %q 生成缩略图", errUnsupported, src.MIME)
+		return "", fmt.Errorf("%w: 无法解码 %q 生成缩略图", ErrUnsupported, src.MIME)
 	}
 
 	rc, info, err := d.blobs.Get(ctx, src.StorageKey)
@@ -198,14 +377,14 @@ func (d *deriver) thumbnailFrom(ctx context.Context, a, src domain.Asset) (strin
 //
 // 走 ffmpeg 而不是纯 Go 解码：标准库没有任何视频容器的解析能力，
 // 而引入一个第三方解码器只为了取一帧完全不成比例。ffmpeg 不在 PATH 上时
-// 返回 errUnsupported，调用方据此静默降级——视频卡片没有封面只是挂载前
+// 返回 ErrUnsupported，调用方据此静默降级——视频卡片没有封面只是挂载前
 // 会白一下，不是故障。
 func (d *deriver) Poster(ctx context.Context, a domain.Asset) (string, error) {
 	if a.Type != domain.AssetTypeVideo {
-		return "", fmt.Errorf("%w: 只有视频需要封面帧", errUnsupported)
+		return "", fmt.Errorf("%w: 只有视频需要封面帧", ErrUnsupported)
 	}
 	if d.ffmpeg == "" {
-		return "", fmt.Errorf("%w: PATH 上没有 ffmpeg", errUnsupported)
+		return "", fmt.Errorf("%w: PATH 上没有 ffmpeg", ErrUnsupported)
 	}
 	if a.StorageKey == "" {
 		return "", fmt.Errorf("asset: 资产 %s 没有存储键", a.ID)
@@ -220,6 +399,18 @@ func (d *deriver) Poster(ctx context.Context, a domain.Asset) (string, error) {
 	}
 	defer func() { _ = os.Remove(tmp) }()
 
+	return d.posterFrom(ctx, a, tmp)
+}
+
+// posterFrom 从一个已经落地的临时文件抽帧。
+//
+// 与 Poster 分开是为了让 Derive 复用同一份临时文件：那里 ffprobe 也要读它，
+// 而一段视频有几百 MB，为了两个只读文件头的命令落两次盘没有道理。
+func (d *deriver) posterFrom(ctx context.Context, a domain.Asset, path string) (string, error) {
+	if d.ffmpeg == "" {
+		return "", fmt.Errorf("%w: PATH 上没有 ffmpeg", ErrUnsupported)
+	}
+
 	cctx, cancel := context.WithTimeout(ctx, posterTimeout)
 	defer cancel()
 
@@ -228,7 +419,7 @@ func (d *deriver) Poster(ctx context.Context, a domain.Asset) (string, error) {
 	cmd := exec.CommandContext(cctx, d.ffmpeg,
 		"-nostdin",
 		"-loglevel", "error",
-		"-i", tmp,
+		"-i", path,
 		"-frames:v", "1",
 		"-an",
 		"-f", "image2",

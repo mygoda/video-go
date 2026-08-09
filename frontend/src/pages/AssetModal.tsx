@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/endpoints';
+import { formatMediaDuration } from '@/components/admin/format';
 import { useAssetActions } from '@/hooks/useAssetActions';
 
 /**
@@ -42,7 +43,7 @@ export function AssetModal({ standalone }: { standalone?: boolean }) {
     <div className="modal">
       <div className="modal-media">
         {asset.type === 'video' ? (
-          <video src={asset.original} poster={asset.poster} controls playsInline />
+          <video src={asset.original} poster={asset.poster ?? undefined} controls playsInline />
         ) : (
           <img src={asset.original} alt={asset.source.prompt} />
         )}
@@ -70,6 +71,12 @@ export function AssetModal({ standalone }: { standalone?: boolean }) {
               <span className="v mono">
                 {asset.width}×{asset.height}
               </span>
+            </div>
+          )}
+          {formatMediaDuration(asset.duration_ms) && (
+            <div className="kv">
+              <span className="k">时长</span>
+              <span className="v mono">{formatMediaDuration(asset.duration_ms)}</span>
             </div>
           )}
         </div>

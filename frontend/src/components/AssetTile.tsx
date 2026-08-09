@@ -1,5 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import type { Asset } from '@/api/types';
+import { assetPreview } from '@/api/types';
+import { formatMediaDuration } from '@/components/admin/format';
 import { useAssetActions } from '@/hooks/useAssetActions';
 
 interface AssetTileProps {
@@ -22,14 +24,9 @@ export function AssetTile({ asset, heightClass, showDelete = true, linkToDetail 
   const location = useLocation();
   const { download, adopt, sendToCanvas, remove } = useAssetActions();
 
-  const media =
-    asset.type === 'video' ? (
-      <img src={asset.poster ?? asset.thumb_512} alt={asset.source.prompt} loading="lazy" />
-    ) : (
-      <img src={asset.thumb_512} alt={asset.source.prompt} loading="lazy" />
-    );
+  const media = <img src={assetPreview(asset)} alt={asset.source.prompt} loading="lazy" />;
 
-  const badge = asset.type === 'video' ? `${asset.duration_seconds ?? 0}s` : asset.type === 'text' ? '文本' : ratioLabel(asset);
+  const badge = asset.type === 'video' ? formatMediaDuration(asset.duration_ms) : ratioLabel(asset);
 
   return (
     <div className={`task-card${heightClass ? ` ${heightClass}` : ''}`}>

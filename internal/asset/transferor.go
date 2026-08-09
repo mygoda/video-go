@@ -198,7 +198,7 @@ func (t *transferor) Transfer(ctx context.Context, userID, taskID string, ref ad
 		id := taskID
 		a.TaskID = &id
 	}
-	t.fillImageSize(ctx, &a)
+	fillImageSize(ctx, t.blobs, t.log, &a)
 
 	saved, err := t.assets.Create(ctx, a)
 	if err != nil {
@@ -231,24 +231,29 @@ func (t *transferor) Transfer(ctx context.Context, userID, taskID string, ref ad
 //
 // 读不出来就留空：这是排版的锦上添花，不值得让一次成功的转存失败。
 // WebP 不在标准库的解码器里，会走到这条路径上——多一个依赖不如少一点排版精度。
-func (t *transferor) fillImageSize(ctx context.Context, a *domain.Asset) {
+//
+// 写成自由函数而不是方法：转存时（还没落库）与回填时（已经落库很久）都要用它，
+// 而后者的调用方是 Deriver，两边共用一份实现才不会出现"新图有尺寸、补的没有"。
+// 返回是否补上了新东西，供回填方决定要不要写库。
+func fillImageSize(ctx context.Context, blobs Store, log *slog.Logger, a *domain.Asset) bool {
 	if a.Type != domain.AssetTypeImage || (a.Width != nil && a.Height != nil) {
-		return
+		return false
 	}
-	rc, _, err := t.blobs.Get(ctx, a.StorageKey)
+	rc, _, err := blobs.Get(ctx, a.StorageKey)
 	if err != nil {
-		t.log.Warn("读产物字节失败，宽高留空", "asset_id", a.ID, "err", err)
-		return
+		log.Warn("读产物字节失败，宽高留空", "asset_id", a.ID, "err", err)
+		return false
 	}
 	defer func() { _ = rc.Close() }()
 
 	cfg, format, err := image.DecodeConfig(rc)
 	if err != nil {
-		t.log.Warn("产物解不出宽高，留空", "asset_id", a.ID, "mime", a.MIME, "err", err)
-		return
+		log.Warn("产物解不出宽高，留空", "asset_id", a.ID, "mime", a.MIME, "err", err)
+		return false
 	}
 	a.Width, a.Height = &cfg.Width, &cfg.Height
-	t.log.Debug("从字节里补出产物宽高", "asset_id", a.ID, "format", format, "w", cfg.Width, "h", cfg.Height)
+	log.Debug("从字节里补出产物宽高", "asset_id", a.ID, "format", format, "w", cfg.Width, "h", cfg.Height)
+	return true
 }
 
 // Promote 把一个临时 upload 提升为正式 asset。
@@ -527,6 +532,6 @@ func firstNonEmpty(vals ...string) string {
 // randomSuffix 给临时文件名一个不会撞的后缀。
 func randomSuffix() string { return uid.Token(8) }
 
-// errUnsupported 供派生等尽力而为的步骤标注"这条路本来就走不通"，
+// ErrUnsupported 供派生等尽力而为的步骤标注"这条路本来就走不通"，
 // 与真实故障区分开，免得日志里全是可预期的噪音。
-var errUnsupported = errors.New("asset: 不支持的操作")
+var ErrUnsupported = errors.New("asset: 不支持的操作")

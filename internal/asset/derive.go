@@ -40,9 +40,15 @@ const Thumb512MaxEdge = 512
 // 原始字节是否还救得回来：派生随时可以重做，上游 URL 过期了就没了。
 type Deriver interface {
 	// Derive 为一件资产生成所有适用的派生规格，返回生成的规格与其 storage key。
-	Derive(ctx context.Context, a domain.Asset) (map[Variant]string, error)
+	//
+	// 入参是指针：视频的宽高与时长只有解开容器才知道，而解容器与抽封面帧是
+	// 同一步，因此顺带补出来的这三项要回填给调用方（见 deriver.Derive）。
+	Derive(ctx context.Context, a *domain.Asset) (map[Variant]string, error)
 	// Thumbnail 生成长边 Thumb512MaxEdge 的缩略图。
 	Thumbnail(ctx context.Context, a domain.Asset) (string, error)
 	// Poster 抽取视频封面帧，仅对 AssetTypeVideo 有意义。
 	Poster(ctx context.Context, a domain.Asset) (string, error)
+	// FillMeta 为一件**已经落库**的资产补上缺失的宽高与时长并写回，
+	// 返回是否补上了新东西。供回填任务把历史资产追平到 Derive 现在的产出。
+	FillMeta(ctx context.Context, a *domain.Asset) (bool, error)
 }

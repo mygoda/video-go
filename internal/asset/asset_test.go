@@ -359,6 +359,10 @@ func (f *fakeAssets) SumBytes(context.Context, string) (int64, int, error)      
 func (f *fakeAssets) SetVariants(context.Context, string, *string, *string) error {
 	return nil
 }
+func (f *fakeAssets) SetMedia(context.Context, string, *int, *int, *int) error { return nil }
+func (f *fakeAssets) ListMissingMedia(context.Context, int) ([]domain.Asset, error) {
+	return nil, nil
+}
 func (f *fakeAssets) ListSoftDeleted(context.Context, time.Time, int) ([]domain.Asset, error) {
 	return nil, nil
 }

@@ -154,6 +154,12 @@ func (r *assetRepo) Get(ctx context.Context, id string) (domain.Asset, error) {
 //
 // 这里正是包注释里那条"分页一律游标"的由来：用户浏览瀑布流的同时任务还在
 // 不断产出新资产，offset 分页会让下一页重复或漏掉条目。
+//
+// 不指定 type 时排除 text：assets 表同时兼着两个身份——管线的产物存放处，
+// 和用户的资产库。text 只属于前者（分镜脚本的对话回复、合成任务的片段清单），
+// 它没有可看的画面、下载和「做同款」对它也没有意义，混进瀑布流就是一块裂图。
+// 过滤放在 SQL 里而不是取出来再筛：游标分页按行数切页，筛在外面会让每页
+// 少几条、next_cursor 与实际条数对不上。显式传 type=text 仍然取得到。
 func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetType, taskID, cursor string, limit int) (store.Page[domain.Asset], error) {
 	if err := requireID("user id", userID); err != nil {
 		return store.Page[domain.Asset]{}, err
@@ -165,6 +171,8 @@ func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetTyp
 	if typ != "" {
 		where = append(where, `type = ?`)
 		args = append(args, string(typ))
+	} else {
+		where = append(where, `type <> 'text'`)
 	}
 	if taskID != "" {
 		where = append(where, `task_id = ?`)
@@ -195,13 +203,17 @@ func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetTyp
 // ListByTask 返回一次任务的全部产物，按创建顺序（= 上游的产物顺序）。
 //
 // 不分页：一次任务最多出几张图，且调用方要的就是"这次生成的全部结果"。
+//
+// 与 List 一样排除 text——调用方是任务卡片，它把每件产物渲染成一张图片。
+// 只产出 text 的任务（分镜、合成清单）因此显示成一张没有产物的卡片，
+// 那正是它的真相：中间物已经喂给下一步了，没有可看的东西交给用户。
 func (r *assetRepo) ListByTask(ctx context.Context, taskID string) ([]domain.Asset, error) {
 	if err := requireID("task id", taskID); err != nil {
 		return nil, err
 	}
 	return r.queryAssets(ctx,
 		`SELECT `+assetColumns+` FROM assets
-		 WHERE task_id = ? AND deleted_at IS NULL
+		 WHERE task_id = ? AND deleted_at IS NULL AND type <> 'text'
 		 ORDER BY created_at ASC, id ASC`, taskID)
 }
 
@@ -532,6 +544,46 @@ func (r *assetRepo) SetVariants(ctx context.Context, assetID string, thumbKey, p
 		}
 	}
 	return nil
+}
+
+// SetMedia 补写宽高与时长。
+//
+// 与 SetVariants 同理，它不能挤进 Create：视频的宽高时长要解开容器才知道，
+// 而解容器与抽封面帧是同一步，发生在字节已经落地之后。
+//
+// 每一项都用 COALESCE(?, 列) 写：传 nil 表示"这一项仍然不知道"，
+// 保持列的原值。直接赋值会让一次只探出时长的补写把上游报过的宽高抹成 NULL。
+//
+// 与 SetVariants 不同，这里不追查 0 行：宽高时长是排版用的锦上添花，
+// 补不上只是瀑布流少一档参差，没有"前端永远拿不到 URL"那种静默失效。
+func (r *assetRepo) SetMedia(ctx context.Context, assetID string, width, height, durationMS *int) error {
+	if err := requireID("asset id", assetID); err != nil {
+		return err
+	}
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE assets
+		 SET width = COALESCE(?, width), height = COALESCE(?, height),
+		     duration_ms = COALESCE(?, duration_ms)
+		 WHERE id = ? AND deleted_at IS NULL`,
+		nullInt(width), nullInt(height), nullInt(durationMS), assetID)
+	if err != nil {
+		return wrap("set asset media", err)
+	}
+	return nil
+}
+
+// ListMissingMedia 列出宽高（视频还包括时长）缺失的资产，供回填任务补写。
+//
+// 只挑 image / video：text 与 audio 本来就没有宽高，把它们列进来会让回填
+// 任务每跑一次都对同一批行做一次无用的探测，且永远清不空。
+func (r *assetRepo) ListMissingMedia(ctx context.Context, limit int) ([]domain.Asset, error) {
+	limit = clampLimit(limit)
+	return r.queryAssets(ctx,
+		`SELECT `+assetColumns+` FROM assets
+		 WHERE deleted_at IS NULL AND type IN ('image', 'video')
+		   AND (width IS NULL OR height IS NULL
+		        OR (type = 'video' AND duration_ms IS NULL))
+		 ORDER BY created_at ASC, id ASC LIMIT ?`, limit)
 }
 
 // ListSoftDeleted 列出软删早于 before 的资产，供 admin 清理任务回收字节。

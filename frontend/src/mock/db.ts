@@ -117,7 +117,7 @@ function videoAsset(seed: string, prompt: string, minutesAgo: number): Asset {
     poster: artUrl(seed, 1280, 720),
     width: 1280,
     height: 720,
-    duration_seconds: 5,
+    duration_ms: 5000,
     created_at: iso(minutesAgo),
     source: {
       model_id: 'hailuo-2-3',
@@ -131,7 +131,7 @@ function videoAsset(seed: string, prompt: string, minutesAgo: number): Asset {
 
 /** 资产没有 size 字段，mock 里按像素/时长估一个，够存储页有数可看 */
 export function assetBytes(asset: Asset): number {
-  if (asset.type === 'video') return Math.round((asset.duration_seconds ?? 5) * 1.8 * 1024 ** 2);
+  if (asset.type === 'video') return Math.round(((asset.duration_ms ?? 5000) / 1000) * 1.8 * 1024 ** 2);
   return Math.round(((asset.width ?? 512) * (asset.height ?? 512)) / 4);
 }
 

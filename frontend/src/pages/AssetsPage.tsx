@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { Asset } from '@/api/types';
+import { assetPreview } from '@/api/types';
 import { useAssets, useMe } from '@/api/queries';
-import { formatBytes } from '@/components/admin/format';
+import { formatBytes, formatMediaDuration } from '@/components/admin/format';
 import { useAuthStore } from '@/stores/auth';
 
 const TYPES = [
@@ -90,13 +91,13 @@ export function AssetsPage() {
             <img
               className={`art ${heightClass(asset)}`}
               style={{ width: '100%', objectFit: 'cover' }}
-              src={asset.type === 'video' ? (asset.poster ?? asset.thumb_512) : asset.thumb_512}
+              src={assetPreview(asset)}
               alt={asset.source.prompt}
               loading="lazy"
             />
             {/* 静止时只有画面，hover 才出元信息 */}
             <div className="asset-meta">
-              {asset.type === 'video' ? `▶ ${asset.duration_seconds ?? 0}s` : asset.source.prompt}
+              {asset.type === 'video' ? `▶ ${formatMediaDuration(asset.duration_ms) ?? '—'}` : asset.source.prompt}
               <br />
               <span className="mono">{asset.source.model_name ?? asset.source.model_id}</span>
             </div>

@@ -55,20 +55,25 @@ export interface CreditLedgerEntry {
   operator_id?: string | null;
 }
 
-/** 后端 skill / 对话类任务会产出 type=text 的产物，资产库里混着，别当图片渲染 */
+/**
+ * type=text 是管线内部产物（分镜脚本的对话回复、合成任务的片段清单）。
+ * 后端的资产库列表已经把它挡在外面了，这里保留这个成员只是因为
+ * `GET /api/assets?type=text` 与按 id 取单件仍然会返回它。
+ */
 export type AssetType = 'image' | 'video' | 'text';
 
 export interface Asset {
   id: string;
   type: AssetType;
   /** 分级渲染依赖多档 URL（frontend-design.md §5.5）。mock 下是 data/占位 URL */
-  thumb_512: string;
+  thumb_512: string | null;
   original: string;
-  poster?: string;
+  poster?: string | null;
   /** text 产物没有尺寸，后端整个字段不返回 */
   width?: number;
   height?: number;
-  duration_seconds?: number;
+  /** 毫秒。字段名跟后端走，别写成 duration_seconds——那样读到的永远是 undefined */
+  duration_ms?: number;
   created_at: string;
   /** 「做同款」与「单卡重跑」的唯一依据 */
   source: {
@@ -79,6 +84,18 @@ export interface Asset {
     params: Record<string, JsonValue>;
     input_asset_ids: string[];
   };
+}
+
+/**
+ * 一件资产在卡片上该显示哪张图。
+ *
+ * thumb_512 会是 null，而且不是异常：派生是尽力而为的（视频缺 ffmpeg、
+ * webp 解不了都会跳过），上传提升成的资产更是从来没派生过。原图当兜底比
+ * 留一个空 src 强——空 src 渲染出来是一块纯色，和「这条产物是假的」
+ * 在用户眼里没有区别。
+ */
+export function assetPreview(asset: Asset): string {
+  return asset.poster ?? asset.thumb_512 ?? asset.original;
 }
 
 export interface Task {

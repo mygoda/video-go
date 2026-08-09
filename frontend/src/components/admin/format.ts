@@ -1,4 +1,4 @@
-/** 管理端共用的展示格式化。数值单位在这里统一，页面里不各写各的。 */
+/** 共用的展示格式化。数值单位在这里统一，页面里不各写各的。 */
 
 export function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 B';
@@ -23,4 +23,20 @@ export function formatDuration(seconds: number | null | undefined): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
   return `${Math.round(seconds / 360) / 10} 小时`;
+}
+
+/**
+ * 视频时长角标。后端给的是毫秒（duration_ms），不是秒。
+ *
+ * 不知道时长时返回 null 让角标整个不出现，而不是显示 0s——「▶ 0s」看起来
+ * 像一段坏掉的空视频，比没有角标误导得多。
+ */
+export function formatMediaDuration(ms: number | null | undefined): string | null {
+  if (!ms || ms <= 0) return null;
+  const seconds = ms / 1000;
+  if (seconds < 10) return `${Math.round(seconds * 10) / 10}s`;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
 }

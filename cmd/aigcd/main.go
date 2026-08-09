@@ -1,11 +1,12 @@
 // Command aigcd is the AIGC Pool backend server.
 //
-// 三个子命令：
+// 子命令：
 //
 //	aigcd serve          启动 HTTP 服务与 worker 池（默认，不带参数时即此）
 //	aigcd migrate up     应用全部未应用的迁移
 //	aigcd migrate down N 回滚最高的 N 个版本（默认 1）
 //	aigcd seed           建初始管理员与普通用户
+//	aigcd backfill-media 给历史资产补上宽高与时长
 //
 // migrate 做成子命令而不是让 README 要求先装 golang-migrate：
 // 「照着 README 走能从零到可用」这条验收线不该卡在装工具上。
@@ -45,6 +46,8 @@ func main() {
 		err = runMigrate(args)
 	case "seed":
 		err = runSeed(args)
+	case "backfill-media":
+		err = runBackfillMedia(args)
 	case "-h", "--help", "help":
 		fmt.Fprint(os.Stderr, usage)
 		return
@@ -64,6 +67,8 @@ const usage = `usage: aigcd [command]
   migrate up       apply all pending migrations
   migrate down [n] roll back the highest n versions (default 1)
   seed             create the initial admin and regular user
+  backfill-media   probe stored images/videos and fill in missing
+                   width/height/duration (idempotent, safe to re-run)
 
 configuration is read from AIGC_-prefixed environment variables; see
 configs/.env.example.

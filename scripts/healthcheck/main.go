@@ -8,11 +8,12 @@
 //	B. 前端调用的每个端点，后端是不是真的注册了（静态对表，不需要服务在跑）
 //	C. 图片主流程：提交 → succeeded → 产物真的落在本地存储 → 字节数 > 0
 //	D. 视频主流程：同上，走完轮询链
+//	E. 资产库那一屏渲染得出来吗：没有 text 混进来，视频的宽高时长齐全
 //
 // 它们的共同点是「代码没改也可能变红」——管理员在后台加一条 mock 模型、
 // 有人删了一条路由、上游挂了，单测和 go build 全都发现不了。
 //
-// 四段互不短路：前面红了后面照跑，最后一次性给汇总，因为上线前你想知道的是
+// 各段互不短路：前面红了后面照跑，最后一次性给汇总，因为上线前你想知道的是
 // 「一共有几处不对」，不是「第一处不对在哪」。
 //
 // 用法：先 `make run`，再 `make health`。
@@ -55,15 +56,21 @@ func main() {
 	case err != nil:
 		r.fail("图片主流程", "前置的目录体检没过，跳过：%v", err)
 		r.fail("视频主流程", "前置的目录体检没过，跳过：%v", err)
+		r.fail("资产库可见性", "前置的目录体检没过，跳过：%v", err)
 	case os.Getenv("AIGC_HEALTH_SKIP_FLOWS") != "":
 		// 两条主流程每跑一次就向 GPUGeek 真下一单、真扣一次积分。
 		// 想高频盯着目录和路由（它们是纯读的）时，用这个开关把花钱的部分关掉。
 		fmt.Println("  AIGC_HEALTH_SKIP_FLOWS 已置位，跳过两条主流程（不产生上游消费）")
+		// 资产库体检是纯读的，跳过主流程时照跑——它查的是历史产物那一屏。
+		checkLibrary(ctx, &r, cat)
 	default:
 		checkFlow(ctx, &r, cat, "image", "图片主流程",
 			envOr("AIGC_HEALTH_IMAGE_MODEL", ""), "a red apple on a wooden table, studio light")
 		checkFlow(ctx, &r, cat, "video", "视频主流程",
 			envOr("AIGC_HEALTH_VIDEO_MODEL", ""), "a paper plane flying over a calm lake")
+		// 放在两条主流程之后：刚生成的那两件产物也要一起过这关，
+		// 否则「新产物就缺宽高」这种回归要等下一次跑才暴露。
+		checkLibrary(ctx, &r, cat)
 	}
 
 	r.print()
@@ -600,6 +607,72 @@ func defaultParams(m *modelSchema) map[string]any {
 	return out
 }
 
+// ── E. 资产库可见性 ──────────────────────────────────────────────────
+
+// checkLibrary 体检探针账号的资产库——也就是「用户点开资产库看到的那一屏」。
+//
+// 两条断言各自钉着一个已经踩过的坑：
+//
+//	1. type=text 不该出现。它是管线的中间产物（分镜脚本的对话回复、合成任务
+//	   的片段清单），没有可看的画面，混进瀑布流就是一块裂图。过滤做在 store
+//	   层，这里守的是「别哪天又把它放回来」。
+//	2. 视频必须有宽高与时长。上游多半不报这三项，靠本地 ffprobe 补；缺了的话
+//	   卡片显示「▶ 0s」、瀑布流也算不出高度——看起来就跟假数据一样。
+//
+// 库是空的时候既不判红也不判绿：全新环境还没有产物，那不是故障。
+func checkLibrary(ctx context.Context, r *report, cat *catalog) {
+	const name = "资产库可见性"
+
+	var page struct {
+		Items []asset `json:"items"`
+	}
+	if err := call(ctx, cat.userToken, http.MethodGet, "/api/assets?limit=100", nil, &page); err != nil {
+		r.fail(name, "GET /api/assets：%v", err)
+		return
+	}
+	if len(page.Items) == 0 {
+		fmt.Println("  探针账号的资产库是空的，跳过资产库体检（不判红）")
+		return
+	}
+
+	var texts, blind []string
+	var videos int
+	for _, a := range page.Items {
+		switch a.Type {
+		case "text":
+			texts = append(texts, a.ID)
+		case "video":
+			videos++
+			if a.Width == nil || a.Height == nil || a.DurationMS == nil {
+				blind = append(blind, fmt.Sprintf("%s(w=%s h=%s ms=%s)",
+					a.ID, optInt(a.Width), optInt(a.Height), optInt(a.DurationMS)))
+			}
+		}
+	}
+
+	fmt.Printf("  资产库前 %d 项：video=%d text=%d\n", len(page.Items), videos, len(texts))
+	switch {
+	case len(texts) > 0:
+		r.fail(name, "资产库里混进了 %d 件 text 产物（前端会拿 <img> 渲染成裂图）：%s",
+			len(texts), strings.Join(texts, ", "))
+	case len(blind) > 0:
+		r.fail(name, "%d 件视频缺宽高或时长（卡片会显示「▶ 0s」，瀑布流算不出高度）：%s",
+			len(blind), strings.Join(blind, "；"))
+	default:
+		r.pass(name, "%d 项全部渲染得出来：text 0 件，%d 件视频的宽高时长齐全",
+			len(page.Items), videos)
+	}
+}
+
+// optInt 把可空整型摊进错误信息，nil 记成 null——报「w=null」比报「w=0」
+// 更能说明是没写回来，而不是写回了一个 0。
+func optInt(p *int) string {
+	if p == nil {
+		return "null"
+	}
+	return fmt.Sprint(*p)
+}
+
 // ── 汇总 ────────────────────────────────────────────────────────────
 
 type result struct {
@@ -788,9 +861,12 @@ type task struct {
 }
 
 type asset struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Original string `json:"original"`
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	Original   string `json:"original"`
+	Width      *int   `json:"width"`
+	Height     *int   `json:"height"`
+	DurationMS *int   `json:"duration_ms"`
 }
 
 func envOr(k, def string) string {
