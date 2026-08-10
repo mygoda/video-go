@@ -62,7 +62,9 @@
 .canvas-screen { flex: 1; display: flex; flex-direction: column; overflow: hidden; height: 100vh; }
 .canvas-viewport { flex: 1; touch-action: none; }
 .canvas-card.text { width: var(--card-w-text); }
-.canvas-card.shot { width: var(--card-w-image); }
+/* 图片 / 视频卡的宽度。类名不叫 shot —— shot 现在是一种卡片类型（镜头卡），
+   而镜头卡按文本宽度排版，同名会被读成"镜头卡走这条" */
+.canvas-card.visual { width: var(--card-w-image); }
 .proj-name { font-size: var(--text-md); font-weight: var(--weight-medium); }
 .rev { font-size: var(--text-2xs); color: var(--text-tertiary); }
 /* 单层 transform 容器：所有卡片放进来，平移缩放只重排这一个层 */

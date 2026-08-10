@@ -162,7 +162,24 @@ export interface CanvasProject {
   updated_at: string;
 }
 
-export type CardKind = 'text' | 'image' | 'video';
+export type CardKind = 'text' | 'image' | 'video' | 'script' | 'shot';
+
+/**
+ * kind=shot 的卡片 params 的形状（docs/openapi.yaml ShotParams）。
+ *
+ * 台词是独立字段，不能并进 description：出片模型音画同步生成，台词进 prompt
+ * 才有同步人声，字幕也直接取这个字段。后端对 shot 卡的 params 做白名单校验，
+ * 多写一个键（`dialog`、`lines` 这类近义词）整批 op 会被 400 顶回来 ——
+ * 所以写回去的对象必须正好是这六个字段。
+ */
+export interface ShotParams {
+  shot_no: number;
+  description: string;
+  dialogue: string;
+  duration_sec: number;
+  camera: string;
+  shot_size: string;
+}
 
 export interface CanvasCard {
   id: string;
@@ -174,7 +191,7 @@ export interface CanvasCard {
   z: number;
   task_id?: string;
   asset_id?: string;
-  /** 后端 Card 目前没有这个字段，提交后会被丢弃 —— 渲染一律走 cardTitle() 兜底 */
+  /** 后端恒定返回（历史卡片是空串）；不填时渲染走 cardTitle() 兜底 */
   title?: string;
   text?: string;
   model_id?: string;

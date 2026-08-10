@@ -428,6 +428,38 @@ a { color: inherit; text-decoration: none; }
   color: var(--text-secondary); backdrop-filter: blur(8px);
 }
 
+/* 剧本 / 镜头卡：正文是文字，不是产物。
+   正文高度封顶，否则一段长剧本能把卡片拉到几屏高，还会压住它下面的镜头卡 */
+.canvas-card .card-text {
+  padding: var(--space-3); font-size: var(--text-xs); line-height: 1.65;
+  color: var(--text-secondary); white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow: hidden;
+}
+.canvas-card .shot-meta { font-size: var(--text-2xs); color: var(--text-tertiary); margin-bottom: 6px; }
+.canvas-card .shot-desc { margin: 0; }
+/* 台词单独一块：出片时只有它会被念出来，混在描述里就看不出这一镜有没有人说话 */
+.canvas-card .shot-dialogue {
+  margin: var(--space-2) 0 0; padding-left: var(--space-2);
+  border-left: 2px solid var(--accent-border); color: var(--text-primary);
+}
+.canvas-card.editing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow-popover); }
+
+.card-editor { padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+.card-editor-row { display: flex; align-items: center; gap: var(--space-2); }
+.card-editor-row label, .card-editor-label { font-size: var(--text-2xs); color: var(--text-tertiary); white-space: nowrap; }
+.card-editor-row .input { height: var(--h-btn-sm); font-size: var(--text-xs); min-width: 0; }
+.card-editor-actions { display: flex; align-items: center; gap: var(--space-2); }
+.card-editor-actions .hint { margin-right: auto; }
+
+/* 版本历史列表 */
+.version-row { padding: var(--space-2); border-radius: var(--radius-md); }
+.version-row + .version-row { border-top: 1px solid var(--border-subtle); }
+.version-row.current { background: var(--accent-subtle); }
+.version-meta { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-2xs); color: var(--text-tertiary); }
+.version-meta .btn { margin-left: auto; }
+.version-text { margin-top: 6px; font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.6; }
+.popover-foot { display: flex; justify-content: flex-end; padding-top: var(--space-2); }
+
 .viewport-controls {
   position: absolute; left: var(--space-4); bottom: var(--space-4);
   height: 36px; padding: 0 var(--space-2);

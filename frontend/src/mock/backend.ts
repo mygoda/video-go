@@ -98,6 +98,25 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** 与真后端 domain.ScriptMaxVersions 一致：留得再多用户也翻不动，只会撑大画布响应。 */
+const SCRIPT_MAX_VERSIONS = 50;
+
+/**
+ * 剧本卡改正文时，把**改动之前**的标题与正文追加成一版（真后端的 scriptVersionSet）。
+ * rev 从 1 起递增，不等于数组下标 —— 版本满 50 之后最旧的会被丢掉，而用户看到的
+ * "第几版"必须还是原来那个号。
+ */
+function appendScriptVersion(card: { title?: string; text?: string; params?: Record<string, JsonValue> }): JsonValue[] {
+  const prev = Array.isArray(card.params?.versions) ? (card.params.versions as JsonValue[]) : [];
+  const last = prev[prev.length - 1];
+  const lastRev = last && typeof last === 'object' && !Array.isArray(last) && typeof last.rev === 'number' ? last.rev : 0;
+  const next: JsonValue[] = [
+    ...prev,
+    { rev: lastRev + 1, title: card.title ?? '', text: card.text ?? '', at: new Date().toISOString() },
+  ];
+  return next.slice(-SCRIPT_MAX_VERSIONS);
+}
+
 /* ────────────────────────── 任务生命周期模拟 ────────────────────────── */
 
 function makeAssets(task: Task, model: ModelCapabilitySchema): Asset[] {
@@ -507,14 +526,30 @@ export async function mockHandle(
       if (body?.base_revision !== canvas.revision) {
         return { status: 409, body: { error: { code: 'revision_conflict', message: '画布已被其他标签页修改', retryable: false, charged: false }, canvas } };
       }
-      for (const op of (body.ops ?? []) as CanvasOp[]) {
+      const ops = (body.ops ?? []) as CanvasOp[];
+      // 真后端把剧本卡的 params 划成服务端所有（store/mysql 的 errScriptParamsNotPatchable），
+      // 整批 op 在改到任何一张卡之前就被顶回来。mock 不照做的话，前端写出来的
+      // "自己维护版本列表"在 mock 里能跑通，一上真后端就是 400。
+      for (const op of ops) {
+        if (op.type !== 'card.update') continue;
+        const target = canvas.cards.find((x) => x.id === op.id);
+        if (target?.kind === 'script' && 'params' in op.patch) {
+          return fail(400, 'invalid_param', 'script card params is maintained by the server');
+        }
+      }
+      for (const op of ops) {
         if (op.type === 'card.create') canvas.cards.push(op.card);
         else if (op.type === 'card.move') {
           const c = canvas.cards.find((x) => x.id === op.id);
           if (c) { c.x = op.x; c.y = op.y; c.auto_placed = false; }
         } else if (op.type === 'card.update') {
           const c = canvas.cards.find((x) => x.id === op.id);
-          if (c) Object.assign(c, op.patch);
+          if (c) {
+            if (c.kind === 'script' && typeof op.patch.text === 'string' && op.patch.text !== (c.text ?? '')) {
+              c.params = { ...c.params, versions: appendScriptVersion(c) };
+            }
+            Object.assign(c, op.patch);
+          }
         } else if (op.type === 'card.delete') {
           canvas.cards = canvas.cards.filter((x) => x.id !== op.id);
         } else if (op.type === 'viewport.set') {
