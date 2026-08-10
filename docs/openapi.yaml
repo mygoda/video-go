@@ -1165,13 +1165,24 @@ paths:
       tags: [admin]
       summary: 手动重试
       operationId: adminRetryTask
-      description: 把失败任务打回 `queued`，重用原冻结额度，不二次扣费。
+      description: |
+        把失败任务打回 `queued`，重用原冻结额度，不二次扣费。
+
+        只接受 executor 执行的任务。画布 chat / storyboard / refine 三条链路也在
+        tasks 里落行（为了让积分流水有可对账的 task_id），但它们是同步跑完的、
+        产物落在画布卡片上，重试只会重打一次上游、多花一份钱，而产物落成一个
+        孤儿 text 资产。这类行（`step` 非空）返回 409。
       responses:
         '200':
           description: 已重新入队
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Task' }
+        '409':
+          description: 任务尚未终结，或它是画布对话类任务（`step` 非空）不支持重试
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/admin/tasks/{taskId}/cancel:
     parameters:
@@ -2668,6 +2679,14 @@ components:
             user_id: { type: string }
             username: { type: string }
             provider_id: { type: string }
+            step:
+              type: string
+              enum: [script, storyboard, refine, legacy]
+              description: |
+                这一行是画布哪条同步链路落的。**缺省表示走 executor 的普通任务**。
+                带 step 的行由 HTTP handler 同步跑完、产物落点是 canvas_cards，
+                `POST /admin/tasks/{taskId}/retry` 对它们返回 409：重试只会重打
+                一次上游、多花一份钱，产物却落成一个孤儿 text 资产。
             attempt: { type: integer }
             upstream_ref:
               type: [string, 'null']

@@ -364,6 +364,11 @@ export interface AdminTask extends Task {
   user_id?: string;
   username?: string;
   provider_id?: string;
+  /**
+   * 这一行是画布哪条同步链路落的（script / storyboard / refine，历史行标 legacy）。
+   * 缺省表示走 executor 的普通任务。带 step 的行不支持重试，重试接口对它们返回 409。
+   */
+  step?: string;
   attempt?: number;
   upstream_ref?: string | null;
   /** 归一化前的上游原始状态，排障用 */

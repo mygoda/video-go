@@ -237,6 +237,13 @@ func (s *server) handleAdminTaskStats(w http.ResponseWriter, r *http.Request) {
 //
 // **不重新冻结积分**：原来那笔 hold 从未退还（失败退款走的是 Refund，
 // 而能重试的场景恰恰是那些没退款的），重新冻结会双倍扣。
+//
+// **只重试 executor 执行的任务**：画布 chat / storyboard / refine 三条链路
+// 也在 tasks 里落行（为了让积分流水有一个可对账的 task_id，见 chatbill.go），
+// 但它们是在 HTTP handler 里同步跑完的，产物落点是 canvas_cards。把这种行
+// 打回 queued，worker 会照着 prompt 真打一次上游、真花一份钱，而产物只能
+// 转存成一个孤儿 text 资产——用户画布上那张卡纹丝不动。重试在这里不是
+// "再试一次"，是"再花一次钱换一个没人看得到的产物"，所以直接拒绝。
 func (s *server) handleAdminRetryTask(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "taskId")
 	if err != nil {
@@ -246,6 +253,10 @@ func (s *server) handleAdminRetryTask(w http.ResponseWriter, r *http.Request) {
 	t, err := s.deps.Tasks.Get(r.Context(), id)
 	if err != nil {
 		writeError(w, r, err)
+		return
+	}
+	if t.Step != "" {
+		writeError(w, r, errConflict("画布对话类任务（%s）不支持重试，请在画布上重新发起", t.Step))
 		return
 	}
 	if !t.Status.IsTerminal() {
