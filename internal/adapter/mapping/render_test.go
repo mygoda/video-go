@@ -592,3 +592,47 @@ func TestRenderIndexedPathErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestRenderPositionalImageSlots 钉住 Seedance 的首尾帧形态：两个槽追加进同一个
+// 裸字符串数组，**顺序即规则顺序**——images[0] 是首帧、images[1] 是尾帧，
+// 上游只按位置识别，顺序错了就是首尾颠倒的片子。
+//
+// 同时钉住「只给首帧」渲染出长度为 1 的数组而不是留个空洞：
+// 空槽取到空值，OmitWhenEmpty 默认为真，于是那一条规则整条被跳过。
+func TestRenderPositionalImageSlots(t *testing.T) {
+	m := RequestMapping{
+		BodyTemplate: map[string]any{"input": map[string]any{}},
+		Rules: []MappingRule{
+			{From: "inputs.first_frame", To: "input.images[]", Inline: true},
+			{From: "inputs.last_frame", To: "input.images[]", Inline: true},
+		},
+	}
+
+	ctx := baseCtx()
+	ctx.InputDataURLs = map[string][]string{
+		"first_frame": {"data:image/png;base64,Rklsc1Q="},
+		"last_frame":  {"data:image/png;base64,TEFTVA=="},
+	}
+
+	got, err := NewRenderer(nil).Render(m, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"input": map[string]any{"images": []any{
+		"data:image/png;base64,Rklsc1Q=",
+		"data:image/png;base64,TEFTVA==",
+	}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("首尾帧顺序不符\n got=%s\nwant=%s", mustJSON(t, got), mustJSON(t, want))
+	}
+
+	ctx.InputDataURLs = map[string][]string{"first_frame": {"data:image/png;base64,Rklsc1Q="}}
+	got, err = NewRenderer(nil).Render(m, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = map[string]any{"input": map[string]any{"images": []any{"data:image/png;base64,Rklsc1Q="}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("只给首帧时不该留空洞\n got=%s\nwant=%s", mustJSON(t, got), mustJSON(t, want))
+	}
+}
