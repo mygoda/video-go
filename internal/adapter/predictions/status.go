@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/aigc-pool/aigc-pool/internal/adapter"
@@ -126,6 +128,43 @@ func snippet(raw []byte) string {
 	return s
 }
 
+// moderationNeedles 是判定"这是一次内容审核拒绝"的关键词表。
+//
+// 这个协议**不给结构化错误码**，上游把审核结论写成一句人话，因此措辞会变——
+// 只钉死某一串（例如 DEM-100 实测的 real person）下次换个说法又会漏。
+// 按语义族收词，但收词有代价：本表在 classify 里排在 invalid 之前，
+// 一次误命中会把真正的参数错误判成 content_rejected（Retryable=false），
+// 用户被告知"改内容"，而他该改的是一个参数。因此宁可漏收也不错收。
+//
+// 收进来的词，共同点是**离开审核语境就不成句**：
+//   - real person / real people / 真人：DEM-100 实测的原话，写实真人首帧被拒。
+//     没有任何参数校验会说"真人"。
+//   - content policy / usage policy / policy violation：各家网关表达"违反内容
+//     政策"的标准说法，两词连用，不会与参数错误撞。
+//   - content filter / nsfw / prohibited：只出现在内容安全语境。
+//   - blocked by：其后接的一定是拦截方（content filter、safety system）。
+//
+// 刻意**没有**收进来的词，以及理由：
+//   - 裸 policy：retry policy / bucket policy / IAM policy 都是正经技术名词，
+//     一次误伤就把"重试策略配置错误"报成"你的内容违规"。
+//   - 裸 not allowed：参数错误里高频——"value not allowed"、"duration not
+//     allowed for this model" 说的都是参数，收它等于主动制造误伤。
+//   - 裸 safety：Flux 系有个正经参数就叫 safety_tolerance，
+//     "safety_tolerance must be in range [0, 6]" 是标准参数错误。
+//   - 裸 blocked：account blocked / IP blocked 讲的是账号与配额，
+//     归到审核会让排查的人去查用户的提示词，而该查的是账号状态。
+//
+// 这四个词单独看覆盖面更大，但它们的误伤是"把一个可修复的参数问题说成
+// 内容违规"，比漏收一条审核拒绝更难被发现，也更难被用户自己纠正。
+var moderationNeedles = []string{
+	"sensitive", "moderation", "risk control",
+	"real person", "real people",
+	"content policy", "usage policy", "policy violation",
+	"content filter", "nsfw", "prohibited",
+	"blocked by",
+	"审核", "违规", "敏感", "风控", "真人",
+}
+
 // classify 按错误文案把失败归到平台的三分类。
 //
 // 这个协议**不给结构化错误码**——error 字段是一段人话。因此只能按关键词分。
@@ -136,7 +175,7 @@ func snippet(raw []byte) string {
 func classify(msg string) domain.TaskErrorCode {
 	lower := strings.ToLower(msg)
 	switch {
-	case containsAny(lower, "sensitive", "moderation", "risk control", "审核", "违规", "敏感", "风控"):
+	case containsAny(lower, moderationNeedles...):
 		return domain.TaskErrorContentRejected
 	case containsAny(lower, "rate limit", "too many requests", "quota", "overload", "insufficient balance",
 		"限流", "配额", "并发", "余额不足", "欠费"):
@@ -156,13 +195,59 @@ func containsAny(s string, needles ...string) bool {
 	return false
 }
 
+// requestIDPattern 从上游错误体里抠出追踪号。
+// 上游在这个键上没统一大小写与下划线（实测 requestId），三种写法都认。
+var requestIDPattern = regexp.MustCompile(`(?i)"request[_-]?id"\s*:\s*"([^"]{1,128})"`)
+
+// moderationMessage 把一次审核拒绝翻成用户能看懂的一句中文。
+//
+// 上游给的是整段英文 JSON，而这个字符串会原样落进 tasks.error_message 再出到
+// API——用户看到的就是它。直接透传有两处害：一是他看不懂，二是里面那句
+// "The request failed" 会被理解成"系统抽风了，再点一次"，而实测（DEM-100）
+// 同一张图重放照样被拒，再点一次只是又输一次。因此这里必须说清楚
+// **是什么被拒了**，并且明确"重提同样的内容没有意义"。
+//
+// requestId 保留在用户可见文案里：它不是密钥，是这次拒绝在上游唯一的追溯
+// 句柄，客服与排障全靠用户把它念出来。英文原文只进日志——排障要的是原文，
+// 用户要的是能读懂的话，两者不是同一个受众。
+func moderationMessage(raw string) string {
+	id := ""
+	if m := requestIDPattern.FindStringSubmatch(raw); m != nil {
+		id = strings.TrimSpace(m[1])
+	}
+	slog.Warn("上游内容审核拒绝，原文只进日志不进用户文案",
+		"driver", Name, "request_id", id, "upstream_message", raw)
+
+	lower := strings.ToLower(raw)
+	subject := "输入内容未通过上游的内容审核"
+	switch {
+	case containsAny(lower, "real person", "real people", "真人"):
+		subject = "上游判定输入图片里出现了可辨认的真人，拒绝生成"
+	case containsAny(lower, "image", "图片", "图像"):
+		subject = "上游判定输入图片未通过内容审核"
+	case containsAny(lower, "text", "prompt", "提示词", "文本"):
+		subject = "上游判定提示词未通过内容审核"
+	}
+
+	msg := "内容审核未通过：" + subject +
+		"。重复提交同样的内容仍会被拒，请更换输入素材或改写提示词后重新发起。"
+	if id != "" {
+		msg += "（上游追踪号 " + id + "）"
+	}
+	return msg
+}
+
 // failureFor 把一个终态失败的响应变成归一化后的 domain.TaskError。
 func failureFor(resp prediction) *domain.TaskError {
 	msg := errorMessage(resp.Error)
 	if msg == "" {
 		return adapter.Failure(domain.TaskErrorInternal, "上游任务失败但未给出原因")
 	}
-	return adapter.Failure(classify(msg), "%s", msg)
+	code := classify(msg)
+	if code == domain.TaskErrorContentRejected {
+		return adapter.Failure(code, "%s", moderationMessage(msg))
+	}
+	return adapter.Failure(code, "%s", msg)
 }
 
 // reclassify 在 httpx 只按状态码分过一次类之后，再按错误文案纠正。
@@ -178,7 +263,11 @@ func reclassify(err error) error {
 		// 文案里认不出线索就不动它，保留 httpx 按状态码给出的分类。
 		return err
 	}
-	return adapter.CallError(code, de.Err, "%s", de.Message)
+	msg := de.Message
+	if code == domain.TaskErrorContentRejected {
+		msg = moderationMessage(de.Message)
+	}
+	return adapter.CallError(code, de.Err, "%s", msg)
 }
 
 // imageMIME 从产物直链的路径后缀猜内容类型。
