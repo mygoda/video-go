@@ -1,5 +1,6 @@
 import type { CanvasCard } from '@/api/types';
 import { hasFirstFrame } from './firstFrame';
+import { hasVideo } from './render';
 
 /**
  * 一张剧本卡下最多几个镜头。与后端 storyboard.go 的 storyboardMaxShots 对齐。
@@ -56,23 +57,24 @@ export function activeScript(cards: CanvasCard[], selectedId: string | null): Ca
  *
  * 首帧那一步的判据是**镜头卡有没有首帧产物**，不是"点过没点过按钮"：
  * 按钮点过但出图失败、或者用户点完就加了一镜，这条线实际上还没出完首帧。
- * 只有每一镜都有图，这一步才算走到。
+ * 只有每一镜都有图，这一步才算走到。出片同理，判据是镜头卡上有没有视频产物
+ * （`card.asset_id`，首帧不占这个字段）。
  *
- * 到 first_frame 为止。出片产物落在镜头卡的 asset_id 上，而那件事是 T7 的，
- * 这一票不产出那个信号 —— 写一个恒为假的 render 分支只是把"没做"伪装成
- * "做了"。
+ * 到 render 为止。合成恒定未解锁：那一步由用户在顶栏点「🎬 合成」自己进，
+ * 出片走完不会把他推进去 —— 每一镜都得先看过才知道要不要重出。
  */
 export function currentStep(script: CanvasCard | null, shots: CanvasCard[]): FlowStepId {
   if (!script) return 'idea';
   if (shots.length === 0) return 'script';
-  return shots.every(hasFirstFrame) ? 'first_frame' : 'storyboard';
+  if (!shots.every(hasFirstFrame)) return 'storyboard';
+  return shots.every(hasVideo) ? 'render' : 'first_frame';
 }
 
 /**
  * 整条链路每一步的状态。
  *
- * 出片与合成恒定未解锁：那两层还没放行。它们在条上占位是为了让用户看得见
- * 这条路还有多长，不是为了让他点。
+ * 合成恒定未解锁：它在条上占位是为了让用户看得见这条路还有多长，
+ * 而进那一步的入口是顶栏的「🎬 合成」，不是这里。
  */
 export function flowSteps(script: CanvasCard | null, shots: CanvasCard[]): FlowStep[] {
   const currentIndex = STEPS.findIndex((s) => s.id === currentStep(script, shots));

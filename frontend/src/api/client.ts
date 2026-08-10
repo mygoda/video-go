@@ -99,3 +99,59 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
 
   return parsed as T;
 }
+
+function blobAsDataURL(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * multipart 提交。POST /api/uploads 只认 multipart —— 它进门第一步就是
+ * ParseMultipartForm，再用 FormFile("file") 取件，JSON body 到不了业务代码。
+ *
+ * 刻意不设 Content-Type：boundary 只有 fetch 自己知道，手写这个头会让服务端
+ * 解析出一个空表单。
+ *
+ * mock 那条分支走 request：假后端收的是 data_url，与真接口形状本来就不同，
+ * 在这里换形状比让离线开发模式整块失效好。
+ */
+export async function postForm<T>(path: string, form: FormData): Promise<T> {
+  if (USE_MOCK) {
+    const file = form.get('file');
+    if (!(file instanceof Blob)) {
+      throw new ApiError(400, { code: 'invalid_param', message: '缺少文件', retryable: false, charged: false });
+    }
+    const name = file instanceof File ? file.name : 'upload';
+    return request<T>(path, { method: 'POST', body: { data_url: await blobAsDataURL(file), name } });
+  }
+
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  const auth = getToken();
+  if (auth) headers.Authorization = `Bearer ${auth}`;
+
+  const res = await fetch(API_BASE + path, { method: 'POST', headers, body: form });
+
+  if (res.status === 401) {
+    handleUnauthorized();
+    throw new ApiError(401, { code: 'unauthorized', message: '登录已失效', retryable: false, charged: false });
+  }
+
+  const text = await res.text();
+  const parsed: unknown = text ? JSON.parse(text) : null;
+
+  if (!res.ok) {
+    const err = (parsed as ApiErrorBody | null)?.error;
+    throw new ApiError(res.status, err ?? {
+      code: 'internal_error',
+      message: `上传失败（${res.status}）`,
+      retryable: true,
+      charged: false,
+    });
+  }
+
+  return parsed as T;
+}

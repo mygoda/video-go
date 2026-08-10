@@ -24,10 +24,20 @@ import { activeScript, MAX_SHOTS } from '@/canvas/flow';
 import {
   firstFrameConcurrency,
   firstFramePrompt,
+  hasFirstFrame,
   runWithGate,
   shotsAwaitingFirstFrame,
   waitForTask,
 } from '@/canvas/firstFrame';
+import {
+  FIRST_FRAME_SLOT,
+  firstFrameInput,
+  hasVideo,
+  pickRenderModel,
+  renderConcurrency,
+  renderPrompt,
+  shotsAwaitingRender,
+} from '@/canvas/render';
 import type { ScriptVersion } from '@/canvas/script';
 import { readShot, relayoutShots, shotParams, shotSlot, shotsOf, SHOT_CARD_H, SHOT_CARD_W } from '@/canvas/shot';
 
@@ -63,6 +73,10 @@ export function CanvasPage() {
   // 所以这里不需要——也不允许——把模型 id 写死在前端（check-no-model-ids.mjs 会拦）。
   const { data: imageModels } = useModels('image');
   const firstFrameModel = imageModels?.[0] ?? null;
+  // 出片走视频目录。这里不能照抄上面的 [0]：目录顺序是陈列顺序，
+  // 判据见 pickRenderModel —— 这一步的等待以分钟计，取 p50 最短的那个。
+  const { data: videoModels } = useModels('video');
+  const renderModel = useMemo(() => pickRenderModel(videoModels), [videoModels]);
   const submitTask = useSubmitTask();
   const qc = useQueryClient();
 
@@ -90,6 +104,10 @@ export function CanvasPage() {
   // 正在出首帧的那几镜。按卡片 id 记而不是记一个总数：骨架屏要精确显示在
   // 那几张卡上，而闸门下同时在飞的永远只是其中两张。
   const [framesInFlight, setFramesInFlight] = useState<ReadonlySet<string>>(new Set());
+  // 批量出片在途。与 firstFrameBusy 分开两个 flag：这两批作用在不同的镜头上
+  // （没图的 vs 有图没片的），互相拦住只会让用户以为界面卡了。
+  const [renderBusy, setRenderBusy] = useState(false);
+  const [rendersInFlight, setRendersInFlight] = useState<ReadonlySet<string>>(new Set());
   const [dockCollapsed, setDockCollapsed] = useState(false);
   // 拖卡片的中间位置只落在这里，松手才写进缓存并排队上行
   const dragRef = useRef<DragState | null>(null);
@@ -116,6 +134,19 @@ export function CanvasPage() {
   const firstFrameCost = useMemo(
     () => (firstFrameModel ? estimateCost(firstFrameModel, defaultValues(firstFrameModel), {}) * pendingFrames : null),
     [firstFrameModel, pendingFrames],
+  );
+
+  // 点一次「出片」会排上几镜：已经有首帧、还没有成片的那些。没首帧的一律不算，
+  // 也不顺手替它出一张——那张图用户没看过，等于把首帧那个确认点跳过去了。
+  const pendingRenders = useMemo(() => shotsAwaitingRender(flowShots).length, [flowShots]);
+  // 报价按「每一镜都挂着首帧」算：排上队的镜头个个都有图，而目录里的加价条件
+  // 可能就看输入槽有没有填，传空对象会报低。
+  const renderCost = useMemo(
+    () =>
+      renderModel
+        ? estimateCost(renderModel, defaultValues(renderModel), { [FIRST_FRAME_SLOT]: [''] }) * pendingRenders
+        : null,
+    [renderModel, pendingRenders],
   );
 
   const refCards = useMemo(
@@ -426,6 +457,88 @@ export function CanvasPage() {
   }
 
   /**
+   * 出一镜的成片：把首帧填进输入槽，提交、等它走到终态。
+   *
+   * **提交时带 cardId**，与首帧那一步刻意相反：视频就是这张镜头卡的产物，
+   * 后端在任务成功时写 canvas_cards.asset_id（store/mysql 的 SetCardResult 只动
+   * 这一列），params.first_frame_asset_id 不在它的射程里，两件产物各占各的字段。
+   *
+   * 一镜出不来只记这一镜：整批的其余镜头照跑。所以这里全程 toast、不抛——
+   * 抛出去会让 runWithGate 的那条 worker 连带把后面排着的镜头一起丢掉。
+   */
+  async function generateVideo(model: ModelCapabilitySchema, card: CanvasCard): Promise<void> {
+    const shot = readShot(card);
+    setRendersInFlight((prev) => new Set(prev).add(card.id));
+    try {
+      const input = await firstFrameInput(shot.first_frame_asset_id);
+      const res = await submitTask({
+        model,
+        prompt: renderPrompt(shot),
+        values: defaultValues(model),
+        inputs: { [FIRST_FRAME_SLOT]: [input] },
+        canvasId: projectId,
+        cardId: card.id,
+      });
+      if (!res.ok) {
+        toast(res.error.message, 'danger');
+        return;
+      }
+      const task = await waitForTask(res.taskId);
+      if (task.status !== 'succeeded') {
+        toast(task.error?.message ?? `第 ${shot.shot_no} 镜没出片`, 'danger');
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : `第 ${shot.shot_no} 镜没出片`, 'danger');
+    } finally {
+      setRendersInFlight((prev) => {
+        const next = new Set(prev);
+        next.delete(card.id);
+        return next;
+      });
+    }
+  }
+
+  /**
+   * 批量出片：同样是**用户点出来的**。首帧出完不会自己走到这里，出完片也不会
+   * 自己去合成——形状与 runFirstFrames / runStoryboard 一致，没有任何 useEffect
+   * 或任务回调能调到它。
+   *
+   * 闸门的上限取 min(前端上限, 目录里这个模型的 max_concurrent_per_user)：
+   * 一条视频是分钟级、按秒计价的任务，放宽闸门就等于用户点一下立刻冻结十几倍积分。
+   */
+  async function runRenders(): Promise<void> {
+    if (!renderModel || renderBusy) return;
+    // 用户很可能刚改完某一镜的台词，那次 patch 还压在防抖里；不冲干净
+    // 出来的片子念的就是改之前的那句。
+    await flush();
+    const targets = shotsAwaitingRender(flowShots);
+    if (!targets.length) return;
+    setRenderBusy(true);
+    try {
+      await runWithGate(targets, renderConcurrency(renderModel), (card) => generateVideo(renderModel, card));
+      await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+    } finally {
+      setRenderBusy(false);
+    }
+  }
+
+  /** 单条重出：只动这一镜，另外几镜的成片原样留着。 */
+  async function rerunRender(card: CanvasCard): Promise<void> {
+    if (!renderModel || rendersInFlight.has(card.id)) return;
+    await flush();
+    if (!hasFirstFrame(card)) {
+      toast('这一镜还没有首帧，出片要拿首帧当第一画面', 'danger');
+      return;
+    }
+    if (!renderPrompt(readShot(card))) {
+      toast('这一镜既没有描述也没有台词，先写一句再出片', 'danger');
+      return;
+    }
+    await generateVideo(renderModel, card);
+    await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+  }
+
+  /**
    * 剧本正文的保存只发 text（必要时带上回退的标题）。版本是服务端在这次 patch
    * 里自己追加的，前端多发一个 params 就会被 400 顶回来（store/mysql 的
    * errScriptParamsNotPatchable）。也正因为版本在服务端生成，写完必须立刻把
@@ -550,8 +663,12 @@ export function CanvasPage() {
         firstFrameBusy={firstFrameBusy}
         firstFramePending={pendingFrames}
         firstFrameCost={firstFrameCost}
+        renderBusy={renderBusy}
+        renderPending={pendingRenders}
+        renderCost={renderCost}
         onStoryboard={(count) => void runStoryboard(count)}
         onFirstFrames={() => void runFirstFrames()}
+        onRenders={() => void runRenders()}
         onAddShot={() => flowScript && appendShots(flowScript, 1)}
         onRemoveShot={() => flowScript && removeShots(flowScript, 1)}
         onResizeShots={resizeShots}
@@ -598,6 +715,7 @@ export function CanvasPage() {
                 dimmed={Boolean(selectedId) && card.id !== selectedId && !lineageIds.has(card.id)}
                 pickIndex={picks.indexOf(card.id) + 1}
                 firstFramePending={framesInFlight.has(card.id)}
+                renderPending={rendersInFlight.has(card.id)}
                 onSelect={onCardClick}
                 onDragStart={onCardDragStart}
                 onEditStart={setEditingId}
@@ -651,6 +769,26 @@ export function CanvasPage() {
               >
                 ↻
               </button>
+              {/* 出片单独一个按钮，不跟 ↻ 挤在一起：一镜有两件产物，
+                  「换一张首帧」和「重出这条片子」是两个价钱、两个等待长度。 */}
+              {selected.kind === 'shot' && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title={
+                    !hasFirstFrame(selected)
+                      ? '先出首帧：出片要拿首帧当第一画面'
+                      : hasVideo(selected)
+                        ? '重出这一镜的成片（首帧不动）'
+                        : '出这一镜的成片'
+                  }
+                  aria-label={hasVideo(selected) ? '重出成片' : '出成片'}
+                  disabled={!renderModel || !hasFirstFrame(selected) || rendersInFlight.has(selected.id)}
+                  onClick={() => void rerunRender(selected)}
+                >
+                  ▶
+                </button>
+              )}
               <button
                 type="button"
                 className="icon-btn"

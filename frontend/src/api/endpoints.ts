@@ -29,7 +29,7 @@ import type {
   UserStatus,
 } from './types';
 import type { JsonValue, ModelCapabilitySchema } from '@/schema/types';
-import { request } from './client';
+import { postForm, request } from './client';
 
 export const api = {
   login: (username: string, password: string) =>
@@ -55,6 +55,19 @@ export const api = {
 
   upload: (dataUrl: string, name: string) =>
     request<UploadResponse>('/uploads', { method: 'POST', body: { data_url: dataUrl, name } }),
+
+  /**
+   * 上传一份字节。slot 只是给回收扫描留的标记，约束仍按提交任务那一步的槽声明校验。
+   *
+   * 与上面那个 upload 并存而不是替掉它：那一条是 InputSlotStrip 在用的路径，
+   * 换掉它等于顺手改一个不属于本票的组件。
+   */
+  uploadFile: (blob: Blob, name: string, slot?: string) => {
+    const form = new FormData();
+    form.append('file', blob, name);
+    if (slot) form.append('slot', slot);
+    return postForm<UploadResponse>('/uploads', form);
+  },
 
   tasks: () => request<Paged<Task>>('/tasks').then((r) => r.items),
 

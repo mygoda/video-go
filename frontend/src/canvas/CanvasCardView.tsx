@@ -21,10 +21,12 @@ interface CanvasCardViewProps {
   /**
    * 这一镜的首帧正在出。
    *
-   * 不走 card.task_id：那个字段是「这张卡自己的产物在跑」，出片那一步要用它，
+   * 不走 card.task_id：那个字段是「这张卡自己的产物在跑」，出片那一步用的就是它，
    * 首帧任务借来占着，两件事就再也分不开了。
    */
   firstFramePending: boolean;
+  /** 这一镜的成片正在出 */
+  renderPending: boolean;
   onSelect(id: string): void;
   onDragStart(e: React.PointerEvent, card: CanvasCard): void;
   onEditStart(id: string): void;
@@ -58,6 +60,7 @@ export function CanvasCardView({
   dimmed,
   pickIndex,
   firstFramePending,
+  renderPending,
   onSelect,
   onDragStart,
   onEditStart,
@@ -119,7 +122,7 @@ export function CanvasCardView({
       {card.kind === 'script' ? (
         <ScriptCardBody card={card} />
       ) : card.kind === 'shot' ? (
-        <ShotCardBody card={card} firstFramePending={firstFramePending} />
+        <ShotCardBody card={card} k={k} firstFramePending={firstFramePending} renderPending={renderPending} />
       ) : card.kind === 'text' ? (
         <div className="body">{card.text}</div>
       ) : pending ? (

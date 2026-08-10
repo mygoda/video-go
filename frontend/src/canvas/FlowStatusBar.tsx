@@ -20,8 +20,15 @@ interface FlowStatusBarProps {
   firstFramePending: number;
   /** 这一批要花多少积分。模型目录还没拉到时为 null */
   firstFrameCost: number | null;
+  /** 批量出片在途 */
+  renderBusy: boolean;
+  /** 点一次「出片」会排上几镜：已有首帧、还没有成片的那些 */
+  renderPending: number;
+  /** 这一批出片要花多少积分。模型目录还没拉到时为 null */
+  renderCost: number | null;
   onStoryboard(count: number): void;
   onFirstFrames(): void;
+  onRenders(): void;
   onAddShot(): void;
   onRemoveShot(): void;
   onResizeShots(count: number): void;
@@ -34,9 +41,9 @@ interface FlowStatusBarProps {
  * 必须一直看得见，不能被别的浮层轮流盖掉。
  *
  * **每一步都停在这里等用户点。** 界面上没有任何一处会自己把流程往下推——
- * 剧本写完不会自动拆分镜，分镜拆完不会自动出首帧，首帧出完不会自动出片。
- * 这是这块 UI 存在的全部理由：让「过程」成为一个能看见、能改、能重来的对象，
- * 而不是一条跑到底的流水线。
+ * 剧本写完不会自动拆分镜，分镜拆完不会自动出首帧，首帧出完不会自动出片，
+ * 出完片也不会自己去合成。这是这块 UI 存在的全部理由：让「过程」成为一个
+ * 能看见、能改、能重来的对象，而不是一条跑到底的流水线。
  */
 export function FlowStatusBar({
   script,
@@ -45,8 +52,12 @@ export function FlowStatusBar({
   firstFrameBusy,
   firstFramePending,
   firstFrameCost,
+  renderBusy,
+  renderPending,
+  renderCost,
   onStoryboard,
   onFirstFrames,
+  onRenders,
   onAddShot,
   onRemoveShot,
   onResizeShots,
@@ -79,7 +90,11 @@ export function FlowStatusBar({
             firstFrameBusy={firstFrameBusy}
             firstFramePending={firstFramePending}
             firstFrameCost={firstFrameCost}
+            renderBusy={renderBusy}
+            renderPending={renderPending}
+            renderCost={renderCost}
             onFirstFrames={onFirstFrames}
+            onRenders={onRenders}
             onAddShot={onAddShot}
             onRemoveShot={onRemoveShot}
             onResizeShots={onResizeShots}
@@ -132,16 +147,26 @@ function StoryboardAction({ busy, onStoryboard }: Pick<FlowStatusBarProps, 'busy
 interface ShotActionProps
   extends Pick<
     FlowStatusBarProps,
-    'firstFrameBusy' | 'firstFramePending' | 'firstFrameCost' | 'onFirstFrames' | 'onAddShot' | 'onRemoveShot' | 'onResizeShots'
+    | 'firstFrameBusy'
+    | 'firstFramePending'
+    | 'firstFrameCost'
+    | 'renderBusy'
+    | 'renderPending'
+    | 'renderCost'
+    | 'onFirstFrames'
+    | 'onRenders'
+    | 'onAddShot'
+    | 'onRemoveShot'
+    | 'onResizeShots'
   > {
   shotCount: number;
 }
 
 /**
- * 分镜与首帧这一步：加镜 / 删镜 / 调镜数，以及批量出首帧。
+ * 分镜、首帧、出片这三步：加镜 / 删镜 / 调镜数，批量出首帧，批量出片。
  *
- * 两步共用一组控件，因为它们作用在同一批镜头卡上：加完一镜，这条线就从
- * 「首帧都出好了」退回「还差一镜」，控件不该跟着换一套。
+ * 三步共用一组控件，因为它们作用在同一批镜头卡上：加完一镜，这条线就从
+ * 「片都出完了」退回「还差一镜」，控件不该跟着换一套。
  *
  * 「调到 N」的输入框平时跟着实际镜头数走，用户一动才转成他自己的草稿
  * （draft 非 null）；应用完再交还。少了这一步，点完加镜后输入框还停在旧数字，
@@ -152,7 +177,11 @@ function ShotAction({
   firstFrameBusy,
   firstFramePending,
   firstFrameCost,
+  renderBusy,
+  renderPending,
+  renderCost,
   onFirstFrames,
+  onRenders,
   onAddShot,
   onRemoveShot,
   onResizeShots,
@@ -232,13 +261,37 @@ function ShotAction({
         {firstFrameBusy ? '出首帧中…' : `继续：出首帧（${firstFramePending} 镜）`}
       </button>
 
+      {renderCost !== null && renderPending > 0 && (
+        <span className="cost">
+          ⚡<span className="amount mono">{renderCost}</span> 积分
+        </span>
+      )}
+      <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        disabled={renderBusy || renderPending === 0}
+        title={
+          renderPending === 0
+            ? firstFramePending > 0
+              ? '还有镜头没出首帧。出片要拿首帧当第一画面，没图的镜头排不上队'
+              : '每一镜都出片了；要重出就选中那一镜，点卡片上的 ▶'
+            : `把这 ${renderPending} 镜排上出片，首帧图作为第一画面喂进去`
+        }
+        aria-describedby="flow-action-hint"
+        onClick={onRenders}
+      >
+        {renderBusy ? '出片中…' : `继续：出片（${renderPending} 镜）`}
+      </button>
+
       <span className={error ? 'hint danger' : 'hint'} id="flow-action-hint" role={error ? 'alert' : undefined}>
         {error ??
           (firstFramePending > 0
             ? full
               ? `已经到上限 ${MAX_SHOTS} 镜；出图前先把每一镜的描述写好，没写描述的镜头排不上队`
               : '先看图再出片：这一步只出图，出完停下来等你逐张确认'
-            : '首帧都出好了。不满意就选中那一镜，点卡片上的 ↻ 单独重出；下一步（出片）还没放行')}
+            : renderPending > 0
+              ? '出片按首帧生成，台词会念出来。一条一分多钟，出完停下来等你逐条看'
+              : '每一镜都有成片了。不满意就选中那一镜，点卡片上的 ▶ 单独重出；要拼成一条片子，点顶栏的「🎬 合成」')}
       </span>
     </>
   );
