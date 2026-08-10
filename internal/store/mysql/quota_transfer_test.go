@@ -222,8 +222,7 @@ func TestTransferUsageStaysExactAcrossManyArtifacts(t *testing.T) {
 	}
 }
 
-// erLockDeadlock 是 InnoDB 报"检测到死锁、已回滚其中一方"的错误号。
-const erLockDeadlock = 1213
+// erLockDeadlock 声明在同包的 asset_concurrency_test.go 里。
 
 // transferRetryingDeadlock 转存一件产物，只在撞上 InnoDB 死锁时重试。
 //
