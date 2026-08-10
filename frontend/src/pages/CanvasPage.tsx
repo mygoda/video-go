@@ -886,6 +886,8 @@ export function CanvasPage() {
           {refineOpen && selected?.kind === 'script' && (
             <ScriptRefinePanel
               card={selected}
+              toolbar={{ ...toolbar, ...toolbarSize }}
+              viewportSize={viewportSize}
               busy={refining}
               onSubmit={(instruction, modelId) => void runRefine(selected, instruction, modelId)}
               onClose={() => setRefineOpen(false)}
