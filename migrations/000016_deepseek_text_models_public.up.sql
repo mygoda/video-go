@@ -29,6 +29,15 @@
 -- 不是一条约束。用户端的图片页 / 视频页取模型都带 modality（前端
 -- api.models(modality) 的形参是必填的），因此 text 模型不会漏进那两个下拉。
 --
+-- ── display_order 为什么从 112 起，而不是排在最前 ──────────────────────
+-- chatModel() 在没人点名模型时取「第一个 enabled 的 chat 模型」，而这个"第一个"
+-- 就是 display_order 升序的头一条（store/mysql/model.go 的 ORDER BY）。DeepSeek
+-- 原先给的 100 / 105 比 qwen-flash 的 110 小，于是它会**悄悄接管所有没点名模型
+-- 的 chat 调用**——分镜那一步（storyboard.go）根本没有点名模型的位置，首当其冲。
+-- 偏偏 V4-Pro 在当前这把 key 上调不通（见下），实测分镜因此 100% 返回 400。
+-- 排在 qwen-flash 之后，默认模型仍是 qwen-flash，与本迁移之前一字不差；
+-- DeepSeek 紧跟其后，在「写剧本」下拉里排第二、第三，依然显眼。
+--
 -- ── credential 与 provider ──────────────────────────────────────────────
 -- 沿用 000003 播下的 gpugeek 供应商与它的 credential_ref（存的是环境变量名，
 -- 不是密钥）。上游确实供这两个模型：GET /v1/models 实测 200，101 条里含
@@ -67,7 +76,7 @@ VALUES
    'text',
    1,
    'public',
-   100,
+   112,
    'DeepSeek V4 Pro · 剧本',
    'GPUGeek',
    '强档中文文本模型，长剧本与整篇改写用它，结构完整、人物一致性好',
@@ -78,7 +87,7 @@ VALUES
      "vendor": "GPUGeek",
      "modality": "text",
      "enabled": true,
-     "order": 100,
+     "order": 112,
      "description": "强档中文文本模型，长剧本与整篇改写用它，结构完整、人物一致性好",
      "inputs": [],
      "params": [
@@ -132,6 +141,7 @@ ON DUPLICATE KEY UPDATE
   upstream_model  = VALUES(upstream_model),
   modality        = VALUES(modality),
   visibility      = VALUES(visibility),
+  display_order   = VALUES(display_order),
   capability      = VALUES(capability),
   request_mapping = VALUES(request_mapping),
   enabled         = VALUES(enabled);
@@ -154,7 +164,7 @@ VALUES
    'text',
    1,
    'public',
-   105,
+   114,
    'DeepSeek V4 Flash · 剧本（快）',
    'GPUGeek',
    '快档中文文本模型，秒级返回，适合反复改写与短剧本',
@@ -165,7 +175,7 @@ VALUES
      "vendor": "GPUGeek",
      "modality": "text",
      "enabled": true,
-     "order": 105,
+     "order": 114,
      "description": "快档中文文本模型，秒级返回，适合反复改写与短剧本",
      "inputs": [],
      "params": [
@@ -219,6 +229,7 @@ ON DUPLICATE KEY UPDATE
   upstream_model  = VALUES(upstream_model),
   modality        = VALUES(modality),
   visibility      = VALUES(visibility),
+  display_order   = VALUES(display_order),
   capability      = VALUES(capability),
   request_mapping = VALUES(request_mapping),
   enabled         = VALUES(enabled);
