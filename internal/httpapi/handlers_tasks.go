@@ -134,11 +134,11 @@ func (s *server) submitTask(ctx context.Context, userID string, req createTaskRe
 	if fields := s.deps.Validator.Validate(schema, sub); len(fields) > 0 {
 		return domain.Task{}, false, errFields(fields, "参数校验未通过")
 	}
-	// 输入槽引用的 upload 必须是本人的，且要满足槽声明的文件约束。校验器只管
-	// "槽填得对不对"，管不到"这个 upload_id 是谁的、那张图多大"——少了归属校验，
-	// 猜到一个 id 就能拿别人的图去生成；少了尺寸校验，一张 200×200 的首帧要等到
-	// 几十秒后上游 failed 才知道，而钱已经冻上了。
-	if err := s.assertInputUploads(ctx, userID, schema, req.Inputs); err != nil {
+	// 输入槽引用的素材（upload_id 或已有 asset_id）必须是本人的，且要满足槽声明的
+	// 文件约束。校验器只管"槽填得对不对"，管不到"这个 id 是谁的、那张图多大"——
+	// 少了归属校验，猜到一个 id 就能拿别人的图去生成；少了尺寸校验，一张 200×200
+	// 的首帧要等到几十秒后上游 failed 才知道，而钱已经冻上了。
+	if err := s.assertInputRefs(ctx, userID, schema, req.Inputs); err != nil {
 		return domain.Task{}, false, err
 	}
 
@@ -210,16 +210,23 @@ func (s *server) submitTask(ctx context.Context, userID string, req createTaskRe
 	return task, true, nil
 }
 
-// assertInputUploads 校验 inputs 里引用的每个 upload 都属于调用方，
+// assertInputRefs 校验 inputs 里引用的每个 id 都属于调用方，
 // 并按 InputSlotSpec 核对文件本身的约束（MIME / 字节数 / 像素）。
 //
-// 文件约束为什么落在这里而不是 capability.Validator：那一层只拿得到 upload_id，
+// **一个 id 既可以是 upload_id，也可以是已有的 asset_id**——先按 asset 查，
+// 查不到再按 upload 查，与 executor.resolveOne 的顺序一致。这条回落是必须的：
+// 少了它，「拿画布上已有的图当首帧」只能把资产的字节取回来重传一遍，同一份
+// 图在存储里躺好几份、各计一次配额，任务的血缘边还会指到一个用户从没见过的副本 id。
+//
+// 文件约束为什么落在这里而不是 capability.Validator：那一层只拿得到 id，
 // 判文件属性就得回查存储，校验器也就不再是纯函数（见它的头注释）。而这里本来
-// 就要为归属校验把每个 upload 取一遍，元信息顺手就在手上，多这几个判断不多一次 IO。
+// 就要为归属校验把每个素材取一遍，元信息顺手就在手上，多这几个判断不多一次 IO。
+// **两条来源分支共用同一套判定**，否则换个来源就能绕过尺寸下限。
 //
 // 为什么不放在上传那一步：上传时还不知道这份素材要挂到哪个模型的哪个槽上，
 // 而约束是**按槽**声明的——同一张 200×200 的图对参考图槽合法、对首帧槽不合法。
-func (s *server) assertInputUploads(ctx context.Context, userID string, schema capability.ModelCapabilitySchema, inputs map[string][]string) error {
+// asset 更是连"上传那一步"都没有，它是平台自己生成的产物。
+func (s *server) assertInputRefs(ctx context.Context, userID string, schema capability.ModelCapabilitySchema, inputs map[string][]string) error {
 	specs := make(map[string]capability.InputSlotSpec, len(schema.Inputs))
 	for _, spec := range schema.Inputs {
 		specs[spec.Key] = spec
@@ -227,31 +234,25 @@ func (s *server) assertInputUploads(ctx context.Context, userID string, schema c
 
 	var fields []domain.FieldError
 	for slot, ids := range inputs {
-		for _, uploadID := range ids {
-			if uploadID == "" {
+		for _, refID := range ids {
+			if refID == "" {
 				continue
 			}
-			u, err := s.deps.Uploads.Get(ctx, uploadID)
+			ref, err := s.resolveInputRef(ctx, userID, refID)
 			if err != nil {
-				var de *domain.Error
-				if errors.As(err, &de) && de.Code == domain.CodeNotFound {
+				if isNotFound(err) {
 					return errFields([]domain.FieldError{
-						{Key: slot, Message: "上传对象 " + uploadID + " 不存在或已过期"},
+						{Key: slot, Message: inputRefNotFound(refID)},
 					}, "参数校验未通过")
 				}
 				return err
-			}
-			if u.UserID != userID {
-				return errFields([]domain.FieldError{
-					{Key: slot, Message: "上传对象 " + uploadID + " 不存在或已过期"},
-				}, "参数校验未通过")
 			}
 			spec, ok := specs[slot]
 			if !ok {
 				// 未知槽已由 Validator 报过，这里不重复报。
 				continue
 			}
-			if msg := checkUploadAgainstSlot(spec, u); msg != "" {
+			if msg := checkInputAgainstSlot(spec, ref); msg != "" {
 				fields = append(fields, domain.FieldError{Key: slot, Message: msg})
 			}
 		}
@@ -262,21 +263,74 @@ func (s *server) assertInputUploads(ctx context.Context, userID string, schema c
 	return nil
 }
 
-// checkUploadAgainstSlot 判定一份已落库的 upload 是否满足槽声明，合法返回空串。
+// inputRef 是输入槽里一个 id 解析出来的素材，屏蔽它来自 uploads 还是 assets。
+// 槽约束只关心文件属性，两种来源在这一层不该有区别。
+type inputRef struct {
+	mime   string
+	bytes  int64
+	width  *int
+	height *int
+}
+
+// inputRefNotFound 是"这个 id 用不了"的**唯一**措辞。
+//
+// 不区分「不存在」「已过期」「是别人的」是有意的：区分开就等于给了一个
+// 探测接口——拿 id 挨个试，能从报错里读出哪些 id 在库里真实存在、属于谁。
+func inputRefNotFound(refID string) string {
+	return "输入素材 " + refID + " 不存在或已过期（既不是你的上传对象，也不是你的资产）"
+}
+
+// resolveInputRef 把一个输入 id 解析成素材元信息：先 asset 后 upload。
+//
+// 顺序与 executor.resolveOne 对齐——执行器先查 asset，提交校验也必须先查 asset，
+// 否则同一个 id 在两处解析成不同的东西。
+//
+// **不属于调用方的资源一律走"查不到"这条路，不提前返回。** 直接返回一个
+// 「是别人的」错误哪怕文案相同，也容易在后续改动里分叉；让它继续往下找，
+// 最终落到与"根本不存在"完全同一个 return 上，存在性就没有泄露的缝隙。
+func (s *server) resolveInputRef(ctx context.Context, userID, refID string) (inputRef, error) {
+	if s.deps.Assets != nil {
+		a, err := s.deps.Assets.Get(ctx, refID)
+		switch {
+		case err == nil && a.UserID == userID:
+			return inputRef{mime: a.MIME, bytes: a.Bytes, width: a.Width, height: a.Height}, nil
+		case err == nil:
+			// 别人的资产，当作不存在，继续按 upload 找。
+		case !isNotFound(err):
+			return inputRef{}, err
+		}
+	}
+
+	u, err := s.deps.Uploads.Get(ctx, refID)
+	if err != nil {
+		return inputRef{}, err
+	}
+	if u.UserID != userID {
+		return inputRef{}, &domain.Error{Code: domain.CodeNotFound, Message: inputRefNotFound(refID)}
+	}
+	return inputRef{mime: u.MIME, bytes: u.Bytes, width: u.Width, height: u.Height}, nil
+}
+
+func isNotFound(err error) bool {
+	var de *domain.Error
+	return errors.As(err, &de) && de.Code == domain.CodeNotFound
+}
+
+// checkInputAgainstSlot 判定一份素材是否满足槽声明，合法返回空串。
 //
 // 宽高为 nil 表示解不出尺寸（视频、webp——见 imageDimensions）。此时**放行**：
 // 声明了 min_pixels 就拒掉所有解不出尺寸的图，会把 webp 这类合法输入一并误伤。
-func checkUploadAgainstSlot(spec capability.InputSlotSpec, u domain.Upload) string {
-	if len(spec.Accept) > 0 && !slices.Contains(spec.Accept, u.MIME) {
-		return "不支持的文件类型 " + u.MIME + "，仅支持 " + strings.Join(spec.Accept, " / ")
+func checkInputAgainstSlot(spec capability.InputSlotSpec, in inputRef) string {
+	if len(spec.Accept) > 0 && !slices.Contains(spec.Accept, in.mime) {
+		return "不支持的文件类型 " + in.mime + "，仅支持 " + strings.Join(spec.Accept, " / ")
 	}
-	if spec.MaxBytes > 0 && u.Bytes > spec.MaxBytes {
-		return "文件 " + itoa(int(u.Bytes)) + " 字节，超过上限 " + itoa(int(spec.MaxBytes)) + " 字节"
+	if spec.MaxBytes > 0 && in.bytes > spec.MaxBytes {
+		return "文件 " + itoa(int(in.bytes)) + " 字节，超过上限 " + itoa(int(spec.MaxBytes)) + " 字节"
 	}
-	if u.Width == nil || u.Height == nil {
+	if in.width == nil || in.height == nil {
 		return ""
 	}
-	w, h := *u.Width, *u.Height
+	w, h := *in.width, *in.height
 	if p := spec.MinPixels; p != nil && (w < p.Width || h < p.Height) {
 		return "尺寸 " + itoa(w) + "×" + itoa(h) + " 小于下限 " + itoa(p.Width) + "×" + itoa(p.Height)
 	}

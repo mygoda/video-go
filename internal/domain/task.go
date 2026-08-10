@@ -105,6 +105,12 @@ type Task struct {
 	Prompt string         `json:"prompt"`
 	Params map[string]any `json:"params"`
 	// Inputs 的 key 是 InputSlotSpec.Key，值是 upload_id 或已有 asset_id 的数组。
+	//
+	// 两种 id 混在同一个数组里，靠**解析顺序**区分：先按 asset_id 查，查不到
+	// 再按 upload_id 查。提交侧（httpapi.assertInputRefs）与执行侧
+	// （executor.resolveOne）必须用同一个顺序，否则同一个 id 在两处会解析成
+	// 不同的东西。传 asset_id 是首选路径：它让「拿画布上已有的图当首帧」不必
+	// 把字节取回来重传一遍，省掉一份存储、一次配额，血缘也直接指向原图。
 	Inputs map[string][]string `json:"inputs,omitempty"`
 
 	// EstimatedCost 是提交时冻结的额度；ActualCost 仅成功后有值，失败三分类恒为 0。

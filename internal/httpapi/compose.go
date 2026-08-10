@@ -247,7 +247,7 @@ func composeSegments(cards []domain.Card, ids []string) ([]string, error) {
 
 // assertOwnsAssets 校验每件参与合成的资产都属于调用方。
 //
-// 与 assertOwnsUploads 同理：不查这一步，猜到（或从别处抄到）一个 asset_id
+// 与 assertInputRefs 同理：不查这一步，猜到（或从别处抄到）一个 asset_id
 // 写进卡片就能把别人的产物拼进自己的成片。找不到与不属于本人回同一句话，
 // 不泄露"这个 id 存在但不是你的"。
 func (s *server) assertOwnsAssets(ctx context.Context, userID string, assetIDs []string) error {

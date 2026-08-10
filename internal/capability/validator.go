@@ -77,8 +77,8 @@ func NewValidator(e Evaluator) Validator {
 // 关于 MIME 与像素约束（InputSlotSpec.Accept / MinPixels / MaxPixels）：
 // Submission.Inputs 里只有 upload_id / asset_id，没有文件本身的元信息，
 // 这里判不了——判了校验器就不再是纯函数，还要多一次按 id 回查存储的 IO。
-// 它们的服务端把关在 HTTP 层：提交任务时本来就要按 id 取一遍 upload 做归属校验，
-// 顺路拿到 MIME 与宽高（见 httpapi.assertInputUploads）。
+// 它们的服务端把关在 HTTP 层：提交任务时本来就要按 id 取一遍素材做归属校验，
+// 顺路拿到 MIME 与宽高（见 httpapi.assertInputRefs）。
 // 因此本方法只校验**槽的存在性、数量与槽间依赖**。
 //
 // 关于 EnabledWhen 为假的参数：**不拒绝**。前端把它渲染成禁用态但仍会随表单提交
