@@ -191,6 +191,10 @@ func (s *server) handleCanvasChat(w http.ResponseWriter, r *http.Request) {
 		SkillID     string   `json:"skill_id"`
 		RefCardIDs  []string `json:"ref_card_ids"`
 		ClientToken string   `json:"client_token"`
+		// ModelID 是用户这次点名用哪个模型写剧本，可选。
+		// 不传就沿用既有规则（AIGC_STORYBOARD_MODEL → 第一个启用的 chat 模型），
+		// 行为与本字段存在之前一字不差。
+		ModelID string `json:"model_id"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, r, err)
@@ -222,14 +226,14 @@ func (s *server) handleCanvasChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	draft, trace, err := s.generateScript(ctx, req.Message, pickCards(snap.Cards, req.RefCardIDs))
+	draft, trace, err := s.generateScript(ctx, req.Message, pickCards(snap.Cards, req.RefCardIDs), req.ModelID)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 	logChatCall("script", p.ID, trace)
 
-	card := scriptCard(draft, snap.Cards, req.RefCardIDs, s.now())
+	card := scriptCard(draft, snap.Cards, req.RefCardIDs, trace.ModelID, s.now())
 	revision, err := s.deps.Canvas.Apply(ctx, p.ID, snap.Revision,
 		[]domain.CanvasOp{{Type: domain.OpCardCreate, Card: &card}})
 	if err != nil {
@@ -358,6 +362,143 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 		"task_ids":         []string{},
 		"cards":            cards,
 	})
+}
+
+// handleRefineScriptCard 按用户的一句指令让模型把一张剧本卡改写一版。
+//
+// # 为什么改写要走 card.update，而不是直接写这张卡
+//
+// 剧本卡的版本历史是在**保存正文**这条路径上由服务端自动追加的
+// （store/mysql.scriptVersionSet）：读出改动前的标题与正文，
+// AppendVersion 收进 params.versions，再把新正文写下去，三步在项目行锁里
+// 串行。这里改走一条自己的 SQL 会快一点，代价是用户点了「优化」之后上一版
+// 被无声吃掉——而"改坏了能切回去"正是这个按钮敢按的全部理由。
+// 因此这里发的是一条普通的 card.update op，和用户手动编辑保存走同一条路。
+//
+// # 为什么改写要落进对话
+//
+// 版本条目的形状是 {rev, title, text, at}，装不下"这一版是按哪句指令改的"，
+// 而 script 卡的 params 只认 versions 一个 key（ParseScriptParams 对未知 key
+// 直接报错，就是为了防止有人在这里另起一套版本存储）。指令要是不落进对话，
+// 它就彻底没了：版本列表能告诉用户第 3 版和第 4 版差在哪，却答不出为什么。
+//
+// 上游失败一律回错误码，卡片一个字不动：改写失败和"改成了空的"必须是
+// 两件能分清的事。
+func (s *server) handleRefineScriptCard(w http.ResponseWriter, r *http.Request) {
+	p, err := s.ownedProject(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	cardID, err := pathID(r, "cardId")
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var req struct {
+		Instruction string `json:"instruction"`
+		ModelID     string `json:"model_id"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	instruction := strings.TrimSpace(req.Instruction)
+	if instruction == "" {
+		writeError(w, r, errFields(
+			[]domain.FieldError{{Key: "instruction", Message: "必填"}}, "参数校验未通过"))
+		return
+	}
+	ctx := r.Context()
+
+	snap, err := s.deps.Canvas.Snapshot(ctx, p.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	card, err := scriptCardByID(snap.Cards, cardID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	draft, trace, err := s.refineScript(ctx, card, instruction, req.ModelID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	logChatCall("refine", p.ID, trace)
+
+	// model_id 一起改：这一版是这个模型写的，而卡片上只留得下最新那一版的
+	// 出处。换个模型再优化一次，这一列跟着换，"当前正文是谁写的"才一直是真的。
+	revision, err := s.deps.Canvas.Apply(ctx, p.ID, snap.Revision, []domain.CanvasOp{{
+		Type: domain.OpCardUpdate,
+		ID:   card.ID,
+		Patch: map[string]any{
+			"title":    draft.Title,
+			"text":     draft.Text,
+			"model_id": trace.ModelID,
+		},
+	}})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	if _, err := s.deps.Canvases.AppendMessage(ctx, domain.Message{
+		ProjectID:  p.ID,
+		Role:       domain.MessageRoleUser,
+		Content:    instruction,
+		RefCardIDs: []string{card.ID},
+		CreatedAt:  s.now(),
+	}); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	reply, err := s.deps.Canvases.AppendMessage(ctx, domain.Message{
+		ProjectID:  p.ID,
+		Role:       domain.MessageRoleAssistant,
+		Content:    refineReply(draft, trace.ModelID),
+		RefCardIDs: []string{card.ID},
+		CreatedAt:  s.now(),
+	})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// 回的是改写后的卡片快照，而不是再拉一次全量：前端拿它就地替换那一张卡。
+	// params 不在这里回——版本列表由服务端在 Apply 里追加，这个结构体是
+	// 改写前读到的那一份，把它回过去等于回一个已经过期的版本列表。
+	card.Title = draft.Title
+	card.Text = &draft.Text
+	card.ModelID = strPtrOrNil(trace.ModelID)
+	card.Params = nil
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reply_message_id": reply.ID,
+		"revision":         revision,
+		"card":             card,
+	})
+}
+
+// scriptCardByID 从快照里挑出一张剧本卡。
+//
+// kind 不是 script 就明确报错而不是照改：镜头卡的正文语义完全不同
+// （台词在 params.dialogue 里），把它当剧本改写会把结构化字段和正文改得
+// 对不上，而那种坏数据要等到出片时才暴露。
+func scriptCardByID(cards []domain.Card, cardID string) (domain.Card, error) {
+	for _, c := range cards {
+		if c.ID != cardID {
+			continue
+		}
+		if c.Kind != domain.CardKindScript {
+			return domain.Card{}, errInvalid(
+				"卡片 %s 的 kind 是 %s，只有 script 卡能改写剧本", cardID, c.Kind)
+		}
+		return c, nil
+	}
+	return domain.Card{}, errNotFound("card")
 }
 
 // pickCards 按 id 从快照里挑出卡片，顺序随 ids。

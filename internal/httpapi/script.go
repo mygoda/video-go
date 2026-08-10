@@ -50,8 +50,10 @@ type scriptDraft struct {
 //
 // refs 是用户在对话里勾选的卡片，它们的标题与正文作为上下文一起发上去——
 // 「多卡引用为下次输入」如果不真的进入提示词，那个勾选框就只是个装饰。
-func (s *server) generateScript(ctx context.Context, idea string, refs []domain.Card) (scriptDraft, chatTrace, error) {
-	reply, trace, err := s.chatOnce(ctx, "script", scriptPrompt(idea, refs))
+//
+// modelID 是用户这次点名的模型，空串表示按默认规则选。
+func (s *server) generateScript(ctx context.Context, idea string, refs []domain.Card, modelID string) (scriptDraft, chatTrace, error) {
+	reply, trace, err := s.chatOnce(ctx, "script", modelID, scriptPrompt(idea, refs))
 	if err != nil {
 		return scriptDraft{}, trace, err
 	}
@@ -147,7 +149,12 @@ func cleanScriptTitle(line string) string {
 //
 // Params 显式给一个空的版本列表而不是留 nil：前端读 params.versions.length
 // 显示「共 N 版」，少这一个字段就是一次 undefined。
-func scriptCard(draft scriptDraft, existing []domain.Card, refs []string, now time.Time) domain.Card {
+//
+// modelID 记的是**写出这一版正文的那个模型**。此前这一列在所有 script 卡上
+// 恒为 NULL，因为写剧本用哪个模型是全局配置、不是每张卡的属性。现在模型
+// 可以逐次点名，"这一版是谁写的"就成了卡片自身的事实：不留下它，用户换个
+// 模型重写一版之后没有任何办法把两版和各自的模型对上。
+func scriptCard(draft scriptDraft, existing []domain.Card, refs []string, modelID string, now time.Time) domain.Card {
 	baseY := 0.0
 	topZ := 0.0
 	for _, c := range existing {
@@ -176,6 +183,7 @@ func scriptCard(draft scriptDraft, existing []domain.Card, refs []string, now ti
 		H:          scriptCardH,
 		Z:          topZ + 1,
 		Text:       &text,
+		ModelID:    strPtrOrNil(modelID),
 		Params:     map[string]any{"versions": []domain.ScriptVersion{}},
 		Refs:       refs,
 		History:    []domain.CardVersion{},
@@ -193,4 +201,72 @@ func scriptReply(draft scriptDraft, modelID string) string {
 	return "已用 " + modelID + " 写好剧本《" + draft.Title + "》，" +
 		"就在画布上，可以直接改。这一步只出剧本，没有生成任何画面；" +
 		"改顺了之后再拆分镜。"
+}
+
+// refineScript 按用户的一句指令让模型重写一遍剧本。
+//
+// 它与 generateScript 的差别只在提示词：产物同样是"第一行标题 + 正文"，
+// 因此解析、落卡、留版本全部复用同一套路径。
+func (s *server) refineScript(ctx context.Context, card domain.Card, instruction, modelID string) (scriptDraft, chatTrace, error) {
+	reply, trace, err := s.chatOnce(ctx, "refine", modelID, refinePrompt(card, instruction))
+	if err != nil {
+		return scriptDraft{}, trace, err
+	}
+	draft, err := parseScriptReply(reply)
+	if err != nil {
+		return scriptDraft{}, trace, err
+	}
+	return draft, trace, nil
+}
+
+// refinePrompt 拼出改写用的那段话。
+//
+// # 为什么要把整篇旧正文发上去，而不是只发指令
+//
+// chat 调用是无状态的，上游那边不存在"这张卡是什么"。不带原文的"把主角换
+// 成女性"只会让模型凭空另写一篇——用户看到的是剧本被换掉了，不是被改了。
+//
+// # 为什么反复强调"只改指令要求的部分"
+//
+// 模型拿到一整篇正文加一句指令，默认反应是顺手把它认为不够好的地方一起
+// 重写。而用户点「优化」时脑子里想的是一次定向修改：改完还要能和上一版
+// 逐段对照，通篇换掉就没法对照了。旧版本虽然留在 params.versions 里丢不了，
+// 但"每改一句话就等于重写一遍"会让这个按钮没人敢按。
+//
+// 输出格式的要求与 scriptPrompt 一字不差（第一行标题、不拆分镜、不要解释），
+// 因为两边的产物要喂给同一个 parseScriptReply。
+func refinePrompt(card domain.Card, instruction string) string {
+	var b strings.Builder
+	b.WriteString("你是一位短剧编剧。下面是一份已有的短剧剧本，请按用户的修改要求改写它。\n\n")
+	b.WriteString("要求：\n")
+	b.WriteString("1. **只改用户要求改的部分**，其余的场景、人物、台词、结构一律原样保留。\n")
+	b.WriteString("2. 输出**完整的**改写后剧本，不要只输出改动的片段，也不要写「其余不变」之类的省略。\n")
+	b.WriteString("3. 第一行只写剧本标题，不要加「标题」「片名」之类的前缀，也不要加书名号。" +
+		"改写要求没提到标题就沿用原标题。\n")
+	b.WriteString("4. 从第二行开始写正文。\n")
+	b.WriteString("5. **不要拆分镜，不要写镜号、景别、机位、时长**——分镜是下一步的事。\n")
+	b.WriteString("6. 只输出剧本本身，不要输出解释、点评、改动说明或代码块标记。\n")
+
+	title := card.Title
+	if title == "" {
+		title = "（未命名）"
+	}
+	b.WriteString("\n原剧本标题：\n")
+	b.WriteString(title)
+	b.WriteString("\n\n原剧本正文：\n")
+	if card.Text != nil {
+		b.WriteString(strings.TrimSpace(*card.Text))
+	}
+	b.WriteString("\n\n修改要求：\n")
+	b.WriteString(instruction)
+	return b.String()
+}
+
+// refineReply 是改写落进对话里的那条助手消息。
+//
+// 明说旧版本还在：用户点「优化」时最真实的顾虑是"改坏了怎么办"，
+// 而版本机制已经兜住了这件事，只是它默默发生在服务端，不说没人知道。
+func refineReply(draft scriptDraft, modelID string) string {
+	return "已用 " + modelID + " 改好剧本《" + draft.Title + "》，" +
+		"改动前的那一版留在卡片的版本列表里，随时能切回去。"
 }

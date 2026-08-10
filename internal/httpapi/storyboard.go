@@ -69,7 +69,9 @@ type storyboardShot struct {
 
 // generateStoryboard 调一次 chat 上游，把一份剧本拆成 shots 个镜头。
 func (s *server) generateStoryboard(ctx context.Context, script string, shots int, refs []domain.Card) ([]storyboardShot, chatTrace, error) {
-	reply, trace, err := s.chatOnce(ctx, "storyboard", storyboardPrompt(script, shots, refs))
+	// 空 modelID：分镜这一步没有给用户点名模型的位置，照旧走
+	// AIGC_STORYBOARD_MODEL → 第一个启用的 chat 模型。
+	reply, trace, err := s.chatOnce(ctx, "storyboard", "", storyboardPrompt(script, shots, refs))
 	if err != nil {
 		return nil, trace, err
 	}

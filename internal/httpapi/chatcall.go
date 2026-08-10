@@ -14,9 +14,10 @@
 //
 // # 为什么不写死模型
 //
-// 走 ModelConfig：优先取配置里的默认模型（AIGC_STORYBOARD_MODEL），没配就取
-// 第一个启用的 chat 族模型。不写死 id，是因为"改配置不重启不发版"正是
-// models 表存在的理由。
+// 走 ModelConfig，三级优先级：这次请求点名的 model_id → 配置里的默认模型
+// （AIGC_STORYBOARD_MODEL）→ 第一个启用的 chat 族模型。不写死 id，是因为
+// "改配置不重启不发版"正是 models 表存在的理由；而最前面那一级让"这一版
+// 剧本用哪个模型写"成为用户能做的选择，而不是运维才能改的全局设置。
 package httpapi
 
 import (
@@ -47,9 +48,17 @@ type chatTrace struct {
 
 // chatModel 选出画布链路这次要用的 chat 模型。
 //
+// requested 是调用方（最终是用户）在这一次请求里点名的模型，空串表示没点名。
+// 三级优先级：**这次点名 → 全局配置（AIGC_STORYBOARD_MODEL）→ 第一个启用的
+// chat 模型**。点名走的校验比配置那条多一项 visibility，理由见 userChatModel。
+//
 // 配置里指定了就用指定的那个（并检查它确实是 chat 族——配错时明确报错，
 // 好过拿一个 video 模型去发 chat 请求然后在上游那边失败）。
-func (s *server) chatModel(ctx context.Context) (domain.ModelConfig, error) {
+func (s *server) chatModel(ctx context.Context, requested string) (domain.ModelConfig, error) {
+	if id := strings.TrimSpace(requested); id != "" {
+		return s.userChatModel(ctx, id)
+	}
+
 	if id := strings.TrimSpace(s.deps.Config.StoryboardModelID); id != "" {
 		m, err := s.deps.Models.Get(ctx, id)
 		if err != nil {
@@ -82,12 +91,52 @@ func (s *server) chatModel(ctx context.Context) (domain.ModelConfig, error) {
 	}
 }
 
+// userChatModel 校验一个由**用户**点名的 chat 模型。
+//
+// 比配置那条路多一项 visibility=public 的检查，而这一项才是这个函数存在的
+// 理由。目录端点（GET /api/models）只下发 public 的模型，但那只是"没告诉
+// 用户"——internal 模型的 id 全在 000003 / 000004 这些迁移里写着，也会出现在
+// 管理端和日志里。不在这里挡一道，任何人把一个 internal 的 id 直接贴进请求
+// 体就能调到它，目录可见性就退化成了一层前端提示。
+//
+// 反过来，配置项（AIGC_STORYBOARD_MODEL）**故意**不查 visibility：那是运维
+// 在服务端设的默认值，平台内部拿一个 internal 模型当默认后端本来就合法
+// （见 000008 的注释：visibility 管的是"摆不摆进用户下拉"，不是"能不能调用"）。
+// 两条路径校验不同，是因为信任来源不同。
+//
+// 三个失败都回 invalid_param 而不是 not_found：对用户来说"这个 model_id
+// 不能用"是同一件事，而分成两种码只会让前端多写一个分支。
+func (s *server) userChatModel(ctx context.Context, id string) (domain.ModelConfig, error) {
+	reject := func(format string, a ...any) (domain.ModelConfig, error) {
+		return domain.ModelConfig{}, errFields(
+			[]domain.FieldError{{Key: "model_id", Message: fmt.Sprintf(format, a...)}},
+			"指定的模型不能用于写剧本")
+	}
+
+	m, err := s.deps.Models.Get(ctx, id)
+	if err != nil {
+		return domain.ModelConfig{}, err
+	}
+	if !m.Enabled {
+		return reject("模型 %s 当前已禁用", id)
+	}
+	if m.Family != domain.FamilyChat {
+		return reject("模型 %s 的 protocol_family 是 %s，写剧本这一步需要 chat", id, m.Family)
+	}
+	if m.Visibility != domain.VisibilityPublic {
+		return reject("模型 %s 不在可选的模型目录里", id)
+	}
+	return m, nil
+}
+
 // chatOnce 打一次 chat 上游，返回回复正文。
 //
-// step 只用来给这次调用的 id 和日志打标（"script" / "storyboard"），
+// step 只用来给这次调用的 id 和日志打标（"script" / "refine"），
 // 好让日志里能分出是哪一步在调，而不是一堆分不清来源的 chat 调用。
-func (s *server) chatOnce(ctx context.Context, step, prompt string) (string, chatTrace, error) {
-	model, err := s.chatModel(ctx)
+//
+// modelID 是这次点名的模型，空串表示按默认规则选（见 chatModel）。
+func (s *server) chatOnce(ctx context.Context, step, modelID, prompt string) (string, chatTrace, error) {
+	model, err := s.chatModel(ctx, modelID)
 	if err != nil {
 		return "", chatTrace{}, err
 	}
