@@ -314,14 +314,26 @@ func TestQuotaGuard(t *testing.T) {
 		t.Errorf("a rejected reserve moved usage to %d", usage.UsedBytes)
 	}
 
-	// 预估与实际总有偏差，Commit 多退少补。
-	requireNoErr(t, guard.Commit(ctx, f.userID, 4000, 2500), "commit smaller actual")
+	// 预占在资产落库后原样撤掉：实际字节由 AssetRepo.Create 记账，Commit 再按
+	// 差额补一次就会把同一份字节记两遍（DEM-98）。这里没有真的落库，
+	// 因此撤完预占用量回到 0 而不是停在"实际大小"上。
+	requireNoErr(t, guard.Commit(ctx, f.userID, 4000), "commit drops the reservation")
 	usage, err = guard.Usage(ctx, f.userID)
 	requireNoErr(t, err, "usage after commit")
-	if usage.UsedBytes != 2500 {
-		t.Errorf("used = %d after commit, want 2500", usage.UsedBytes)
+	if usage.UsedBytes != 0 {
+		t.Errorf("used = %d after commit, want 0", usage.UsedBytes)
 	}
 
+	// 撤得比占的多也不能压成负数：负用量会让配额检查永远通过。
+	requireNoErr(t, guard.Reserve(ctx, f.userID, 2500), "reserve again")
+	requireNoErr(t, guard.Commit(ctx, f.userID, 999999), "over-commit")
+	usage, err = guard.Usage(ctx, f.userID)
+	requireNoErr(t, err, "usage after over-commit")
+	if usage.UsedBytes != 0 {
+		t.Errorf("over-commit drove usage to %d; it must clamp at 0", usage.UsedBytes)
+	}
+
+	requireNoErr(t, guard.Reserve(ctx, f.userID, 2500), "reserve for release")
 	requireNoErr(t, guard.Release(ctx, f.userID, 2500), "release")
 	usage, err = guard.Usage(ctx, f.userID)
 	requireNoErr(t, err, "usage after release")
