@@ -485,6 +485,17 @@ a { color: inherit; text-decoration: none; }
   border-radius: var(--radius-xl); box-shadow: var(--shadow-modal);
   z-index: var(--z-dock); overflow: hidden;
 }
+/* 坞是浮在画布上的面板，不是盖在画布上的盖子。
+   整块矩形都吃指针的话，压在它底下的卡片连选都选不中；而坞是不透明的，
+   用户看不出那儿还压着东西，只会以为那张卡坏了。
+   所以指针事件按「是不是真控件」发放：头部与输入区整块收下（那两处全是控件），
+   消息列表整块让出去 —— 消息只是给人看的字，没有任何点击语义，凭什么替
+   底下的卡片挡住点击。让出去的代价是浏览器也不再把滚轮派给列表，那件事在
+   ConversationDock 里手动接回来了。
+   选择器带上 .canvas-overlay 是为了盖过那一层的 `> * { pointer-events: auto }`。 */
+.canvas-overlay > .dock { pointer-events: none; }
+.dock-head, .dock-foot { pointer-events: auto; }
+.dock-body { pointer-events: none; }
 .dock-head {
   height: 40px; padding: 0 var(--space-3);
   display: flex; align-items: center; gap: var(--space-2);

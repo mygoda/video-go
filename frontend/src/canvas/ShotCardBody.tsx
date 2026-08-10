@@ -4,9 +4,6 @@ import { readShot } from './shot';
 
 interface ShotCardBodyProps {
   card: CanvasCard;
-  editing: boolean;
-  onSave(shot: ShotParams): void;
-  onCancel(): void;
 }
 
 /**
@@ -15,12 +12,8 @@ interface ShotCardBodyProps {
  * 台词单独占一块而不是和描述连排：它是出片时唯一会被念出来的部分，
  * 混在描述里用户就看不出这一镜到底有没有人说话。
  */
-export function ShotCardBody({ card, editing, onSave, onCancel }: ShotCardBodyProps) {
+export function ShotCardBody({ card }: ShotCardBodyProps) {
   const shot = readShot(card);
-  if (editing) {
-    return <ShotEditor card={card} shot={shot} onSave={onSave} onCancel={onCancel} />;
-  }
-
   const meta = [shot.shot_size, shot.camera, shot.duration_sec > 0 ? `${shot.duration_sec}s` : '']
     .filter(Boolean)
     .join(' · ');
@@ -34,8 +27,14 @@ export function ShotCardBody({ card, editing, onSave, onCancel }: ShotCardBodyPr
   );
 }
 
-function ShotEditor({ card, shot, onSave, onCancel }: Omit<ShotCardBodyProps, 'editing'> & { shot: ShotParams }) {
-  const [draft, setDraft] = useState(shot);
+interface ShotEditorProps {
+  card: CanvasCard;
+  onSave(shot: ShotParams): void;
+  onCancel(): void;
+}
+
+export function ShotEditor({ card, onSave, onCancel }: ShotEditorProps) {
+  const [draft, setDraft] = useState(() => readShot(card));
   const id = (field: string) => `shot-${field}-${card.id}`;
 
   function set<K extends keyof ShotParams>(key: K, value: ShotParams[K]): void {
@@ -45,10 +44,7 @@ function ShotEditor({ card, shot, onSave, onCancel }: Omit<ShotCardBodyProps, 'e
   return (
     <div
       className="card-editor"
-      onPointerDown={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
-        e.stopPropagation();
         if (e.key === 'Escape') onCancel();
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onSave(draft);
       }}

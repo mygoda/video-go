@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import type { CanvasCard, ShotParams, Task } from '@/api/types';
+import type { CanvasCard, Task } from '@/api/types';
 import { assetPreview } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { useTasks } from '@/api/queries';
@@ -18,14 +18,9 @@ interface CanvasCardViewProps {
   dimmed: boolean;
   /** 合成模式下的片段序号（从 1 起）；未入选为 0。序号即成片里的先后 */
   pickIndex: number;
-  /** 就地编辑中。同一时刻只有一张卡处于这个状态，由画布页统一持有 */
-  editing: boolean;
   onSelect(id: string): void;
   onDragStart(e: React.PointerEvent, card: CanvasCard): void;
   onEditStart(id: string): void;
-  onEditCancel(): void;
-  onSaveScript(card: CanvasCard, text: string): void;
-  onSaveShot(card: CanvasCard, shot: ShotParams): void;
 }
 
 /**
@@ -55,13 +50,9 @@ export function CanvasCardView({
   lineage,
   dimmed,
   pickIndex,
-  editing,
   onSelect,
   onDragStart,
   onEditStart,
-  onEditCancel,
-  onSaveScript,
-  onSaveShot,
 }: CanvasCardViewProps) {
   const wantsMedia = k >= 0.4 && visible;
   const { data: asset } = useAsset(card.asset_id, wantsMedia);
@@ -83,7 +74,6 @@ export function CanvasCardView({
     lineage ? 'lineage' : '',
     dimmed ? 'dimmed' : '',
     pickIndex > 0 ? 'picked' : '',
-    editing ? 'editing' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -91,7 +81,7 @@ export function CanvasCardView({
   return (
     <article
       className={className}
-      style={{ left: card.x, top: card.y, width: card.w, zIndex: editing ? card.z + 1000 : card.z }}
+      style={{ left: card.x, top: card.y, width: card.w, zIndex: card.z }}
       role="group"
       tabIndex={0}
       aria-label={cardTitle(card)}
@@ -101,7 +91,7 @@ export function CanvasCardView({
         onDragStart(e, card);
       }}
       onDoubleClick={() => {
-        if (editable && !editing) onEditStart(card.id);
+        if (editable) onEditStart(card.id);
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -119,19 +109,9 @@ export function CanvasCardView({
       {/* 剧本与镜头排在媒体分支之前，且不读 asset：正文是文字，落到下面任何一条
           <img>/<video> 分支都是一张裂图（DEM-78 已经为 text 产物修过一次）。 */}
       {card.kind === 'script' ? (
-        <ScriptCardBody
-          card={card}
-          editing={editing}
-          onSave={(text) => onSaveScript(card, text)}
-          onCancel={onEditCancel}
-        />
+        <ScriptCardBody card={card} />
       ) : card.kind === 'shot' ? (
-        <ShotCardBody
-          card={card}
-          editing={editing}
-          onSave={(shot) => onSaveShot(card, shot)}
-          onCancel={onEditCancel}
-        />
+        <ShotCardBody card={card} />
       ) : card.kind === 'text' ? (
         <div className="body">{card.text}</div>
       ) : pending ? (

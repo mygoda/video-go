@@ -10,6 +10,7 @@ import { toast } from '@/stores/toast';
 import { useViewport } from '@/canvas/useViewport';
 import { useCanvasSync } from '@/canvas/useCanvasSync';
 import { CanvasCardView } from '@/canvas/CanvasCardView';
+import { CardEditorLayer } from '@/canvas/CardEditorLayer';
 import { ConversationDock } from '@/canvas/ConversationDock';
 import { CardRerunPanel } from '@/canvas/CardRerunPanel';
 import { ComposeBar } from '@/canvas/ComposeBar';
@@ -75,6 +76,9 @@ export function CanvasPage() {
   const project = projects?.find((p) => p.id === projectId);
   const cards = canvas?.cards ?? [];
   const selected = cards.find((c) => c.id === selectedId) ?? null;
+  // 只有剧本与镜头有就地编辑器；卡片被删或换了类型时 editingId 可能指向一张
+  // 已经不该开编辑器的卡，这里一并兜住。
+  const editingCard = cards.find((c) => c.id === editingId && (c.kind === 'script' || c.kind === 'shot')) ?? null;
   const lineageIds = new Set(selected?.refs ?? []);
 
   // 流程条盯着的那一条创作线：选中的剧本（或选中镜头回溯到的剧本），
@@ -138,19 +142,6 @@ export function CanvasPage() {
     [cards, dragPos, enqueue],
   );
 
-  /**
-   * 开始就地编辑，顺手把对话坞收起来。
-   *
-   * 编辑器展开后比卡片高得多，卡片落在画布右下角时「保存」正好落在坞的浮层
-   * 底下，点不着（⌘/Ctrl+Enter 不受影响，但那是给知道的人用的）。这两样东西
-   * 抢的是同一个角落，就跟合成条与对话坞一样，同一时刻只留一个。
-   * 收起不是关掉：坞还挂着，输了一半的话和选好的技能都在，用户随时能展回去。
-   */
-  function startEditing(id: string): void {
-    setEditingId(id);
-    setDockCollapsed(true);
-  }
-
   function addTextCard(): void {
     const rect = viewportEl?.getBoundingClientRect();
     const at = rect ? toWorld(rect.left + rect.width / 2, rect.top + 160) : { x: 0, y: 0 };
@@ -202,7 +193,7 @@ export function CanvasPage() {
     };
     enqueue([{ type: 'card.create', card }], (prev) => ({ ...prev, cards: [...prev.cards, card] }));
     setSelectedId(card.id);
-    startEditing(card.id);
+    setEditingId(card.id);
   }
 
   /**
@@ -269,7 +260,7 @@ export function CanvasPage() {
     if (!selected || selected.kind !== 'script' || shotsOf(cards, selected.id).length >= MAX_SHOTS) return;
     const [card] = appendShots(selected, 1);
     setSelectedId(card.id);
-    startEditing(card.id);
+    setEditingId(card.id);
   }
 
   /**
@@ -471,13 +462,9 @@ export function CanvasPage() {
                 lineage={lineageIds.has(card.id)}
                 dimmed={Boolean(selectedId) && card.id !== selectedId && !lineageIds.has(card.id)}
                 pickIndex={picks.indexOf(card.id) + 1}
-                editing={card.id === editingId}
                 onSelect={onCardClick}
                 onDragStart={onCardDragStart}
-                onEditStart={startEditing}
-                onEditCancel={() => setEditingId(null)}
-                onSaveScript={saveScript}
-                onSaveShot={saveShot}
+                onEditStart={setEditingId}
               />
             );
           })}
@@ -492,7 +479,7 @@ export function CanvasPage() {
                   className="icon-btn"
                   title="编辑正文（也可以双击卡片）"
                   aria-label="编辑正文"
-                  onClick={() => startEditing(selected.id)}
+                  onClick={() => setEditingId(selected.id)}
                 >
                   ✎
                 </button>
@@ -597,6 +584,18 @@ export function CanvasPage() {
             />
           )}
         </div>
+
+        {/* 编辑器单独一层，压在坞（z 300）之上。它不能进 .canvas-world —— 那一层
+            是层叠上下文，里面的 z-index 封顶在它自己身上。详见 CardEditorLayer。 */}
+        {editingCard && (
+          <CardEditorLayer
+            card={editingCard}
+            viewport={viewport}
+            onCancel={() => setEditingId(null)}
+            onSaveScript={saveScript}
+            onSaveShot={saveShot}
+          />
+        )}
       </div>
     </div>
   );

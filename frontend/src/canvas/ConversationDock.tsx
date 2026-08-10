@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasCard, CanvasMessage } from '@/api/types';
 import { cardTitle } from './cardTitle';
@@ -33,10 +33,37 @@ export function ConversationDock({
   const [skillId, setSkillId] = useState<string | null>(null);
   const [skillOpen, setSkillOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const { data: skills } = useSkills();
   const qc = useQueryClient();
 
   const skill = skills?.find((s) => s.id === skillId);
+
+  /**
+   * 消息列表把指针命中让给了底下的卡片（见 components.css 里 .dock-body 那一段），
+   * 代价是浏览器也不再把滚轮派给它——滚轮会直接落到画布上，用户想往回翻聊天
+   * 记录，翻走的却是整块画布。所以滚轮这一件事手动接回来。
+   *
+   * 挂在画布视口上、且走捕获阶段：画布自己的滚轮监听是冒泡阶段的，捕获先跑，
+   * 才拦得住它。不挂在列表自己身上——它 pointer-events:none，收不到任何事件。
+   */
+  useEffect(() => {
+    const body = bodyRef.current;
+    const viewport = body?.closest('.canvas-viewport');
+    if (!body || !viewport) return;
+    const onWheel = (e: Event) => {
+      const wheel = e as WheelEvent;
+      const at = body.getBoundingClientRect();
+      const inside =
+        wheel.clientX >= at.left && wheel.clientX <= at.right && wheel.clientY >= at.top && wheel.clientY <= at.bottom;
+      if (!inside || body.scrollHeight <= body.clientHeight) return;
+      wheel.preventDefault();
+      wheel.stopPropagation();
+      body.scrollTop += wheel.deltaY;
+    };
+    viewport.addEventListener('wheel', onWheel, { capture: true, passive: false });
+    return () => viewport.removeEventListener('wheel', onWheel, { capture: true });
+  }, [collapsed]);
 
   async function send(): Promise<void> {
     const value = text.trim();
@@ -72,7 +99,7 @@ export function ConversationDock({
 
       {!collapsed && (
         <>
-          <div className="dock-body">
+          <div className="dock-body" ref={bodyRef}>
             {conversation.map((m) => (
               <div className={`msg${m.role === 'assistant' ? ' ai' : ''}`} key={m.id}>
                 <span className="who">{m.role === 'assistant' ? 'AI' : '你'}</span>

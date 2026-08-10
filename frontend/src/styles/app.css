@@ -71,6 +71,14 @@
 .canvas-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
 .canvas-overlay { position: absolute; inset: 0; pointer-events: none; z-index: var(--z-canvas-overlay); }
 .canvas-overlay > * { pointer-events: auto; }
+/* 就地编辑器那一层：跟 .canvas-overlay 一样是 .canvas-world 的兄弟，但高一档。
+   .canvas-world 带 will-change:transform，它本身就是层叠上下文，里面的卡片
+   无论 z-index 给多大都升不出这一层 —— 所以编辑器必须挂到外面来，且要压过
+   对话坞（z 300），否则落在右下角的卡片一开编辑器，「保存」就点不着。 */
+.canvas-popover-layer { position: absolute; inset: 0; pointer-events: none; z-index: var(--z-popover); }
+.canvas-popover-layer > * { pointer-events: auto; }
+/* 编辑器按卡片的屏幕坐标定位，再整体缩到当前 k，视觉上跟长在卡片上一样 */
+.card-editor-float { transform-origin: 0 0; }
 .canvas-viewport.panning { cursor: grabbing; }
 
 /* =============================================================================
