@@ -59,6 +59,9 @@ export function ProfilePage() {
   const { data: tasks } = useTasks();
   const { data: imageModels } = useModels('image');
   const { data: videoModels } = useModels('video');
+  // 文本目录也得拉：画布的对话 / 拆分镜 / 优化都开始扣费了，账本里现在有文本
+  // 任务，少这一档它们的模型名全查不到，条目就秃成一句「文本生成」。
+  const { data: textModels } = useModels('text');
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -97,7 +100,7 @@ export function ProfilePage() {
 
   const taskById = new Map((tasks ?? []).map((t) => [t.id, t]));
   const modelNameById = new Map(
-    [...(imageModels ?? []), ...(videoModels ?? [])].map((m) => [m.id, m.name]),
+    [...(imageModels ?? []), ...(videoModels ?? []), ...(textModels ?? [])].map((m) => [m.id, m.name]),
   );
   // hold/charge 是同一笔消费的两条记账，charge 结算为 0 时只是记账收尾，对用户没有信息量
   const ledgerRows = (ledger?.items ?? []).filter((e) => !(e.type === 'charge' && e.amount === 0));

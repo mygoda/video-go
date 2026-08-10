@@ -11,6 +11,7 @@ import { estimateCost } from '@/schema/pricing';
 import type { ModelCapabilitySchema } from '@/schema/types';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
+import { useElementSize } from '@/canvas/useElementSize';
 import { useViewport } from '@/canvas/useViewport';
 import { useCanvasSync } from '@/canvas/useCanvasSync';
 import { CanvasCardView } from '@/canvas/CanvasCardView';
@@ -41,6 +42,7 @@ import {
 } from '@/canvas/render';
 import type { ScriptVersion } from '@/canvas/script';
 import { readShot, relayoutShots, shotParams, shotSlot, shotsOf, SHOT_CARD_H, SHOT_CARD_W } from '@/canvas/shot';
+import { toolbarPosition } from '@/canvas/toolbar';
 
 interface DragState {
   pointerId: number;
@@ -84,6 +86,11 @@ export function CanvasPage() {
   const [viewportEl, setViewportEl] = useState<HTMLDivElement | null>(null);
   const { viewport, panning, zoomBy, fit, toWorld, handlers } = useViewport(projectId, viewportEl);
   const { enqueue, flush, saveState } = useCanvasSync(projectId);
+  // 工具条和视口都要量：工具条宽度随按钮个数变（剧本卡 5 个、便签 2 个），
+  // 视口尺寸决定它往哪边钳。
+  const [toolbarEl, setToolbarEl] = useState<HTMLDivElement | null>(null);
+  const viewportSize = useElementSize(viewportEl);
+  const toolbarSize = useElementSize(toolbarEl);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rerunOpen, setRerunOpen] = useState(false);
@@ -635,8 +642,9 @@ export function CanvasPage() {
     return <div className="empty">画布加载中…</div>;
   }
 
-  const toolbarLeft = selected ? selected.x * viewport.k + viewport.x + selected.w * viewport.k - 96 : 0;
-  const toolbarTop = selected ? selected.y * viewport.k + viewport.y - 38 : 0;
+  const toolbar = selected
+    ? toolbarPosition(selected, viewport, toolbarSize, viewportSize)
+    : { left: 0, top: 0 };
 
   return (
     <div className="canvas-screen">
@@ -761,7 +769,7 @@ export function CanvasPage() {
 
         <div className="canvas-overlay">
           {selected && (
-            <div className="card-toolbar" style={{ left: toolbarLeft, top: toolbarTop }}>
+            <div ref={setToolbarEl} className="card-toolbar" style={{ left: toolbar.left, top: toolbar.top }}>
               {(selected.kind === 'script' || selected.kind === 'shot') && (
                 <button
                   type="button"
