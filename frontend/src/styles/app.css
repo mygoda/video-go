@@ -170,6 +170,20 @@
 .modal-side { padding: var(--space-5); display: flex; flex-direction: column; gap: var(--space-4); }
 @media (max-width: 800px) { .modal { grid-template-columns: 1fr; } }
 
+/* 表单类小弹框。共用 .modal-backdrop，但 .modal 是资产预览的双栏专用尺寸，
+   装一个输入框会得到 960 宽的空双栏，所以另起一个窄容器 */
+.dialog {
+  width: min(420px, 100%); padding: var(--space-5);
+  background: var(--bg-elevated); border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl); box-shadow: var(--shadow-modal);
+  display: flex; flex-direction: column; gap: var(--space-4);
+  animation: dialog-in var(--dur-slow) var(--ease-out);
+}
+.dialog h2 { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-semi); }
+.dialog-foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.dialog-foot .hint { margin-right: auto; }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+
 /* toast */
 .toast-stack {
   position: fixed; right: var(--space-4); bottom: var(--space-4);
