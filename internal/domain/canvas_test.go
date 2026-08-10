@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -98,4 +99,61 @@ func marshalToMap(t *testing.T, v any) map[string]any {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	return raw
+}
+
+// TestShotParamsJSONContract 钉住台词是**独立字段**且恒定出现。
+//
+// 这两件事都不是风格问题：台词一旦被并进 description，出片时就没法把它单独
+// 拼进 prompt（Seedance 靠它生成同步人声），字幕也没了来源。而字段少了一个
+// 又会让前端的镜头卡读到 undefined。
+func TestShotParamsJSONContract(t *testing.T) {
+	raw := marshalToMap(t, ShotParams{ShotNo: 1, Description: "雨夜的巷口"})
+
+	for _, key := range []string{
+		"shot_no", "description", "dialogue", "duration_sec", "camera", "shot_size",
+	} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("shot params 少了字段 %q：前端会读到 undefined", key)
+		}
+	}
+	if raw["dialogue"] != "" {
+		t.Errorf("dialogue = %#v, want an empty string for a wordless shot", raw["dialogue"])
+	}
+}
+
+func TestParseShotParams(t *testing.T) {
+	ok, err := ParseShotParams(map[string]any{
+		"shot_no": 2, "description": "推近", "dialogue": "你终于来了",
+		"duration_sec": 4, "camera": "手持跟拍", "shot_size": "特写",
+	})
+	if err != nil {
+		t.Fatalf("a well-formed shot was rejected: %v", err)
+	}
+	if ok.ShotNo != 2 || ok.Dialogue != "你终于来了" || ok.DurationSec != 4 {
+		t.Errorf("parsed shot params = %+v", ok)
+	}
+
+	// 空 params 放行：镜头卡可以先建出来再填。
+	if _, err := ParseShotParams(nil); err != nil {
+		t.Errorf("empty params were rejected: %v", err)
+	}
+
+	// 台词写进近义 key 必须当场报错。宽松接收的话它会安静存下来，
+	// 出片时读 dialogue 读到空串，成片没有人声且无从追查。
+	for _, bad := range []map[string]any{
+		{"shot_no": 1, "dialog": "你终于来了"},
+		{"shot_no": 1, "lines": "你终于来了"},
+		{"shot_no": 0},
+		{"shot_no": 1, "duration_sec": -1},
+	} {
+		_, err := ParseShotParams(bad)
+		var de *Error
+		if !errors.As(err, &de) || de.Code != CodeInvalidParam {
+			t.Errorf("ParseShotParams(%v) = %v, want invalid_param", bad, err)
+			continue
+		}
+		if len(de.FieldErrors) == 0 {
+			t.Errorf("ParseShotParams(%v) reported no field errors", bad)
+		}
+	}
 }

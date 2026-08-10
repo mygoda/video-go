@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"time"
 
@@ -576,10 +577,15 @@ func insertCard(ctx context.Context, tx *sql.Tx, projectID string, c domain.Card
 	if c.ID == "" {
 		c.ID = uid.New()
 	}
-	switch c.Kind {
-	case domain.CardKindText, domain.CardKindImage, domain.CardKindVideo:
-	default:
+	if !c.Kind.Valid() {
 		return invalidParam("unknown card kind " + string(c.Kind))
+	}
+	// shot 卡的 params 有 schema（见 domain.ShotParams），建卡这一刻就校验：
+	// kind 不在 card.update 的白名单里，一张 shot 卡建错了改不回来。
+	if c.Kind == domain.CardKindShot {
+		if _, err := domain.ParseShotParams(c.Params); err != nil {
+			return err
+		}
 	}
 
 	params, err := jsonValue(c.Params)
@@ -665,6 +671,17 @@ func updateCard(ctx context.Context, tx *sql.Tx, projectID, cardID string, patch
 		sets = append(sets, frag)
 		args = append(args, arg)
 	}
+
+	// shot 卡就地改台词 / 改镜头描述走的就是 params 这一路，因此写进去之前
+	// 要过一遍 schema——建卡时校验过而改卡时不校验，等于留了一道后门，
+	// 把台词改进一个拼错的 key 里照样能存下来。多这一次查询只发生在真的
+	// 动了 params 的 patch 上，拖卡片、改标题都不受影响。
+	if _, ok := patch["params"]; ok {
+		if err := checkShotParamsPatch(ctx, tx, projectID, cardID, patch["params"]); err != nil {
+			return err
+		}
+	}
+
 	args = append(args, cardID, projectID)
 
 	res, err := tx.ExecContext(ctx,
@@ -674,6 +691,42 @@ func updateCard(ctx context.Context, tx *sql.Tx, projectID, cardID string, patch
 		return wrap("apply card.update", err)
 	}
 	return requireCardTouched(res, cardID)
+}
+
+// checkShotParamsPatch 在卡片是 shot 时按 domain.ShotParams 校验新的 params。
+//
+// 卡片不存在时返回 nil：紧随其后的 UPDATE 会因为影响 0 行而报 not_found，
+// 由它来报比在这里抢先报一个语义相同的错更少一处分叉。
+func checkShotParamsPatch(ctx context.Context, tx *sql.Tx, projectID, cardID string, value any) error {
+	var kind string
+	err := tx.QueryRowContext(ctx,
+		`SELECT kind FROM canvas_cards
+		  WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
+		cardID, projectID).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return wrap("load card kind", err)
+	}
+	if domain.CardKind(kind) != domain.CardKindShot {
+		return nil
+	}
+
+	// patch 的值可能是 JSON 解出来的 map，也可能是调用方在 Go 侧直接构造的
+	// domain.ShotParams。统一走一次 JSON 往返，两种形态在这里就没有分支了。
+	params := map[string]any{}
+	if value != nil {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return invalidParam("card.params is not valid JSON: " + err.Error())
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return invalidParam("card.params must be an object")
+		}
+	}
+	_, err = domain.ParseShotParams(params)
+	return err
 }
 
 // cardPatchArg 把 patch 里的值转成可绑定的形态。

@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"sort"
+	"time"
+)
 
 // Project 是一个画布项目。
 //
@@ -25,7 +29,28 @@ const (
 	CardKindText  CardKind = "text"
 	CardKindImage CardKind = "image"
 	CardKindVideo CardKind = "video"
+	// CardKindScript 是剧本卡，正文放在 Text。在它存在之前剧本只是
+	// canvas_messages 里的一条聊天记录——看得见但改不动，更重来不了。
+	CardKindScript CardKind = "script"
+	// CardKindShot 是镜头卡，结构化字段放在 Params（见 ShotParams），
+	// Refs 指回它所属的剧本卡。它是「花钱出片之前能改」的那个对象。
+	CardKindShot CardKind = "shot"
 )
+
+// KnownCardKinds 是全部合法的卡片类型，落库白名单以它为准。
+var KnownCardKinds = []CardKind{
+	CardKindText, CardKindImage, CardKindVideo, CardKindScript, CardKindShot,
+}
+
+// Valid 报告该 kind 是否为已知类型。
+func (k CardKind) Valid() bool {
+	for _, known := range KnownCardKinds {
+		if k == known {
+			return true
+		}
+	}
+	return false
+}
 
 // CardVersion 是卡片的一个历史版本，重跑时旧版本入 history，
 // 供卡片左下角的版本切换器 ‹2/3› 使用。
@@ -68,6 +93,111 @@ type Card struct {
 
 	AutoPlaced bool      `json:"auto_placed"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// ShotParams 是 shot 卡放在 Card.Params 里的结构化字段。
+//
+// # 为什么台词必须是独立字段，而不是揉进 Description
+//
+// 上游 Doubao-Seedance-2.0-fast 是音画同步生成：台词写进 prompt，出片就带同步
+// 的中文人声（实测 prompt 含「你终于来了」，成片音轨 whisper 转写一字不差；
+// 不含台词时音轨只有环境音）。也就是说人声不需要 TTS、不需要新模型、不额外
+// 花钱，它是 prompt 层的事——**前提是拼 prompt 的时候能把台词单独拎出来**。
+// 字幕同理：台词本来就是用户自己写的，直接拿这个字段生成，零成本零误差，
+// 不需要对成片做语音转写。这两件事只要台词一旦被并进镜头描述就都做不成了。
+//
+// # 为什么不新建 shots 表
+//
+// 见 000014 迁移的注释：canvas_cards 已经有增删改查、软删、revision 推进和
+// 回放，再造一张表换不来新能力，只换来两份必须同步演进的代码。
+//
+// 六个字段全部恒定序列化（不加 omitempty），理由同 Card.Title：前端直接读，
+// 少一个字段就是一次白屏；空串 / 0 是合法值（这一镜没写台词、时长还没定）。
+type ShotParams struct {
+	// ShotNo 是镜号，从 1 开始。它是镜头在剧本内的顺序，也是拼片的依据。
+	ShotNo int `json:"shot_no"`
+	// Description 是镜头描述（画面内容），出片时进 prompt。**不含台词。**
+	Description string `json:"description"`
+	// Dialogue 是这一镜的台词，可以为空（空镜、纯环境音）。
+	Dialogue string `json:"dialogue"`
+	// DurationSec 是镜头时长（秒）。0 表示还没定，由出片那一步取模型默认值。
+	DurationSec float64 `json:"duration_sec"`
+	// Camera 是机位 / 运镜，如「手持跟拍」「固定」。自由文本：上游吃的是
+	// 自然语言 prompt，收敛成枚举只会把模型认得的说法挡在外面。
+	Camera string `json:"camera"`
+	// ShotSize 是景别，如「特写」「中景」「全景」。自由文本，理由同 Camera。
+	ShotSize string `json:"shot_size"`
+}
+
+// shotParamKeys 是 ShotParams 全部合法的 JSON key，用于拒绝未知字段。
+var shotParamKeys = map[string]struct{}{
+	"shot_no": {}, "description": {}, "dialogue": {},
+	"duration_sec": {}, "camera": {}, "shot_size": {},
+}
+
+// ParseShotParams 把 shot 卡的 params 解成 ShotParams 并校验。
+//
+// # 为什么未知 key 报错而不是留着
+//
+// 这个 schema 存在的全部意义就是台词有它自己的位置。而把台词写进 `dialog`、
+// `lines`、`speech` 这类近义 key，在一个「宽松接收」的实现里会安静地存下来，
+// 出片时拼 prompt 的代码读 `dialogue` 读到空串，成片就是没有人声——和这张票
+// 要修的原始故障一模一样，且没有任何报错可查。宁可在写入那一刻就顶回去。
+//
+// 空 params 直接放行：镜头卡可以先建出来再填（分镜那一步会分批回写）。
+func ParseShotParams(params map[string]any) (ShotParams, error) {
+	var sp ShotParams
+	if len(params) == 0 {
+		return sp, nil
+	}
+
+	var fields []FieldError
+	for key := range params {
+		if _, ok := shotParamKeys[key]; !ok {
+			fields = append(fields, FieldError{
+				Key:     "params." + key,
+				Message: "shot 卡不认识这个字段，台词请用 dialogue，画面描述请用 description",
+			})
+		}
+	}
+	if len(fields) > 0 {
+		sort.Slice(fields, func(i, j int) bool { return fields[i].Key < fields[j].Key })
+		return sp, shotParamsError(fields)
+	}
+
+	// 先 Marshal 再 Unmarshal：params 是 map[string]any（JSON 解出来的形态），
+	// 逐 key 做类型断言要写六遍近乎一样的分支，而 encoding/json 的类型错误
+	// 本来就带字段名。
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return sp, shotParamsError([]FieldError{{Key: "params", Message: err.Error()}})
+	}
+	if err := json.Unmarshal(raw, &sp); err != nil {
+		return sp, shotParamsError([]FieldError{{Key: "params", Message: err.Error()}})
+	}
+
+	if sp.ShotNo < 1 {
+		fields = append(fields, FieldError{
+			Key: "params.shot_no", Message: "镜号从 1 开始",
+		})
+	}
+	if sp.DurationSec < 0 {
+		fields = append(fields, FieldError{
+			Key: "params.duration_sec", Message: "时长不能为负",
+		})
+	}
+	if len(fields) > 0 {
+		return sp, shotParamsError(fields)
+	}
+	return sp, nil
+}
+
+func shotParamsError(fields []FieldError) error {
+	return &Error{
+		Code:        CodeInvalidParam,
+		Message:     "shot 卡的 params 不合法",
+		FieldErrors: fields,
+	}
 }
 
 // MessageRole 是画布对话中一条消息的角色。

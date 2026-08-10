@@ -290,6 +290,110 @@ func TestCanvasAppendMessage(t *testing.T) {
 	}(), domain.CodeNotFound)
 }
 
+// TestCanvasScriptAndShotCards 覆盖剧本卡与镜头卡这条链路：建卡、血缘、
+// 就地改台词、以及把台词写进拼错的 key 时必须报错。
+//
+// 它钉住的是这个模块存在的理由：在此之前剧本只是一条聊天记录、镜头描述在
+// 变成出片 prompt 之后就消失了，用户看不见也改不动。
+func TestCanvasScriptAndShotCards(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	repo := NewCanvasRepo(db)
+	f := newFixture(t, 0, 1<<30)
+	p := newProject(t, f)
+
+	scriptID := "card_" + uid.Token(8)
+	shotID := "card_" + uid.Token(8)
+	rev, err := repo.ApplyOps(ctx, p.ID, p.Revision, []domain.CanvasOp{
+		{Type: domain.OpCardCreate, Card: &domain.Card{
+			ID: scriptID, Kind: domain.CardKindScript, Title: "雨夜重逢",
+			Text: strPtrOf("第一场 雨夜的巷口……"), Refs: []string{},
+		}},
+		{Type: domain.OpCardCreate, Card: &domain.Card{
+			ID: shotID, Kind: domain.CardKindShot, Title: "镜 1",
+			// 血缘复用 refs：镜头卡指回它的来源剧本卡，不新建边表。
+			Refs: []string{scriptID},
+			Params: map[string]any{
+				"shot_no": 1, "description": "雨夜巷口，女主撑伞回头",
+				"dialogue": "你终于来了", "duration_sec": 4,
+				"camera": "手持跟拍", "shot_size": "中景",
+			},
+		}},
+	})
+	requireNoErr(t, err, "create script and shot cards")
+
+	snap, err := repo.Snapshot(ctx, p.ID)
+	requireNoErr(t, err, "snapshot")
+	cards := map[string]domain.Card{}
+	for _, c := range snap.Cards {
+		cards[c.ID] = c
+	}
+	if cards[scriptID].Kind != domain.CardKindScript {
+		t.Errorf("script card kind = %q", cards[scriptID].Kind)
+	}
+	shot := cards[shotID]
+	if shot.Kind != domain.CardKindShot {
+		t.Errorf("shot card kind = %q", shot.Kind)
+	}
+	if len(shot.Refs) != 1 || shot.Refs[0] != scriptID {
+		t.Errorf("shot refs = %v, want the script card id", shot.Refs)
+	}
+	// 台词必须原样回读。它是人声与字幕唯一的来源，丢了就是成片没有人声。
+	if shot.Params["dialogue"] != "你终于来了" {
+		t.Errorf("dialogue lost on the way back: %#v", shot.Params["dialogue"])
+	}
+
+	// 就地改台词：前端改的就是这一路。
+	rev2, err := repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+		{Type: domain.OpCardUpdate, ID: shotID, Patch: map[string]any{
+			"params": map[string]any{
+				"shot_no": 1, "description": "雨夜巷口，女主撑伞回头",
+				"dialogue": "我等了很久", "duration_sec": 4,
+				"camera": "手持跟拍", "shot_size": "特写",
+			},
+		}},
+	})
+	requireNoErr(t, err, "patch shot params")
+	snap, err = repo.Snapshot(ctx, p.ID)
+	requireNoErr(t, err, "snapshot after patch")
+	for _, c := range snap.Cards {
+		if c.ID == shotID && c.Params["dialogue"] != "我等了很久" {
+			t.Errorf("dialogue was not updated: %#v", c.Params["dialogue"])
+		}
+	}
+
+	// 台词写进近义 key 必须当场顶回来，建卡和改卡两条路都要挡。
+	requireCode(t, func() error {
+		_, err := repo.ApplyOps(ctx, p.ID, rev2, []domain.CanvasOp{
+			{Type: domain.OpCardUpdate, ID: shotID, Patch: map[string]any{
+				"params": map[string]any{"shot_no": 1, "dialog": "拼错的台词"},
+			}},
+		})
+		return err
+	}(), domain.CodeInvalidParam)
+
+	requireCode(t, func() error {
+		_, err := repo.ApplyOps(ctx, p.ID, rev2, []domain.CanvasOp{
+			{Type: domain.OpCardCreate, Card: &domain.Card{
+				ID: "card_" + uid.Token(8), Kind: domain.CardKindShot, Refs: []string{},
+				Params: map[string]any{"shot_no": 1, "speech": "拼错的台词"},
+			}},
+		})
+		return err
+	}(), domain.CodeInvalidParam)
+
+	// 非 shot 卡的 params 不受这套 schema 约束：image / video 卡一直在
+	// 往 params 里塞各自模型的参数，多这条校验会把它们全打死。
+	imageID := "card_" + uid.Token(8)
+	_, err = repo.ApplyOps(ctx, p.ID, rev2, []domain.CanvasOp{
+		{Type: domain.OpCardCreate, Card: &domain.Card{
+			ID: imageID, Kind: domain.CardKindImage, Refs: []string{},
+			Params: map[string]any{"size": "1024x1024", "seed": 42},
+		}},
+	})
+	requireNoErr(t, err, "image card params must stay unconstrained")
+}
+
 func f64(v float64) *float64 { return &v }
 
 func strPtrOf(s string) *string { return &s }

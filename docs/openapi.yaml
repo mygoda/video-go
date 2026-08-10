@@ -2124,7 +2124,10 @@ components:
         id: { type: string }
         kind:
           type: string
-          enum: [text, image, video]
+          enum: [text, image, video, script, shot]
+          description: >-
+            script 是剧本卡，正文在 text；shot 是镜头卡，结构化字段在 params
+            （形状见 ShotParams），refs 指回它所属的 script 卡。
         x: { type: number }
         y: { type: number }
         w: { type: number }
@@ -2137,6 +2140,7 @@ components:
         prompt: { type: [string, 'null'] }
         params:
           type: object
+          description: kind=shot 时形状固定为 ShotParams，多余的键会被拒绝；其余 kind 不约束
           additionalProperties: { $ref: '#/components/schemas/JsonValue' }
         refs:
           type: array
@@ -2156,6 +2160,35 @@ components:
           type: boolean
           description: 用户手动移动过就置 false，该区域不再参与自动重排
         created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    ShotParams:
+      type: object
+      description: >-
+        kind=shot 的卡片 params 的形状。台词是**独立字段**，不能并进
+        description：出片模型（Seedance 2.0）音画同步生成，台词进 prompt 就有
+        同步人声，字幕也直接取这个字段，两者都要求台词能被单独拎出来。
+      required: [shot_no, description, dialogue, duration_sec, camera, shot_size]
+      properties:
+        shot_no:
+          type: integer
+          minimum: 1
+          description: 镜号，从 1 开始，也是拼片顺序
+        description:
+          type: string
+          description: 镜头描述（画面内容），不含台词
+        dialogue:
+          type: string
+          description: 这一镜的台词，可为空串（空镜）
+        duration_sec:
+          type: number
+          minimum: 0
+          description: 镜头时长（秒），0 表示未定，出片时取模型默认值
+        camera:
+          type: string
+          description: 机位 / 运镜，自由文本
+        shot_size:
+          type: string
+          description: 景别，自由文本
 
     CanvasMessage:
       type: object
