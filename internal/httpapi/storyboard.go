@@ -53,6 +53,15 @@ const (
 	// 按剧本卡的 420×360 铺出来，一屏放不下三个镜头。
 	shotCardW = 280.0
 	shotCardH = 180.0
+
+	// storyboardInputRunes 是落进 tasks.prompt 的那段剧本摘要的长度。
+	//
+	// 拆分镜是点着卡片触发的，用户没有说过任何一句话（见 handlers_canvas 里
+	// "不伪造一条用户消息"那段），因此这一步没有天然的"用户输入"可落。退而取
+	// 被拆的那张剧本卡的正文开头：那是用户自己写的、画布上看得见的东西，
+	// 他在 GET /api/tasks 里认得出是哪一次拆解。取开头一段而不是整篇，
+	// 是因为这一列只用来认人，不需要装下一份剧本。
+	storyboardInputRunes = 100
 )
 
 // storyboardShot 是模型返回的一个镜头。字段名就是喂给模型的 JSON 契约，
@@ -76,6 +85,7 @@ func (s *server) generateStoryboard(ctx context.Context, call chatCall, script s
 	call.step = "storyboard"
 	call.modelID = ""
 	call.prompt = storyboardPrompt(script, shots, refs)
+	call.userInput = truncateRunes(strings.TrimSpace(script), storyboardInputRunes)
 
 	reply, trace, bill, err := s.chatOnce(ctx, call)
 	if err != nil {
