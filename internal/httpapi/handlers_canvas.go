@@ -172,8 +172,13 @@ func (s *server) handlePatchCanvas(w http.ResponseWriter, r *http.Request) {
 // 上一版在这里一次调用就把剧本和分镜两层一起吞掉，直接落 3 张视频卡并为
 // 每张卡起一条真的视频任务：**用户还没看到任何东西，钱已经花出去了**，
 // 而中间的剧本、分镜从来没有作为对象存在过，看不见也就改不动。
-// 现在这一步只产出一张剧本卡，`tasks` 表一行不增。拆分镜是下一步，
+// 现在这一步只产出一张剧本卡，**不派任何出片任务**。拆分镜是下一步，
 // 出片还要更后面；每一层都得先停下来让用户看一眼、改一改。
+//
+// 写剧本这一次 chat 调用本身是要收费的（它烧真 token），因此 tasks 表会多
+// 一行——那是这笔积分的结算对象，不是一条会被 worker 捞去执行的任务，
+// 理由见 chatbill.go。它不出现在 task_ids 里：那个字段回答的是
+// "这一步派了几条出片任务"，答案仍然是零。
 //
 // 因此这里也不再解析技能的 default_model_id：这一步不出片，就没有"出片模型
 // 配错了"这回事。它挪到真正花钱的那一步去校验，才校验得到点子上。
@@ -226,7 +231,9 @@ func (s *server) handleCanvasChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	draft, trace, err := s.generateScript(ctx, req.Message, pickCards(snap.Cards, req.RefCardIDs), req.ModelID)
+	draft, trace, bill, err := s.generateScript(ctx,
+		chatCall{userID: p.UserID, modelID: req.ModelID, projectID: p.ID},
+		req.Message, pickCards(snap.Cards, req.RefCardIDs))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -237,9 +244,15 @@ func (s *server) handleCanvasChat(w http.ResponseWriter, r *http.Request) {
 	revision, err := s.deps.Canvas.Apply(ctx, p.ID, snap.Revision,
 		[]domain.CanvasOp{{Type: domain.OpCardCreate, Card: &card}})
 	if err != nil {
+		// 卡没落上去，用户手里什么都没有：全额退。撞版本冲突也算这一类——
+		// 他重试一次会再花一次钱，这一次就不能收。
+		bill.refund(ctx, err)
 		writeError(w, r, err)
 		return
 	}
+	// 剧本已经在画布上了，这次调用交付完成。往后再失败也不退——
+	// 下面那条对话消息没写进去不影响用户拿到的东西。
+	bill.charge(ctx)
 
 	// 助手消息的 RefCardIDs 指向这轮产出的卡片：对话记录因此能回答
 	// "这张卡是哪句话变出来的"，而这正是「创作过程可回放」的一半。
@@ -272,10 +285,10 @@ func (s *server) handleCanvasChat(w http.ResponseWriter, r *http.Request) {
 // 往下走**。理由同 handleCanvasChat：每一层都得先停下来让用户看一眼、改一改，
 // 而链路一旦自动跑到底，中间那几层就又只是过程，不是能改的对象了。
 //
-// # 这一步只落文字，一分钱不花
+// # 这一步只落文字
 //
-// 拆镜头本身走 chat 模型（AIGC_STORYBOARD_MODEL），成本可忽略；除了那一次
-// chat 调用，**不派任何出片任务，`tasks` 表一行不增**。首帧图、成片都是后面
+// 拆镜头本身走 chat 模型（AIGC_STORYBOARD_MODEL），按模型声明的固定单价扣一
+// 笔积分；除了那一次 chat 调用，**不派任何出片任务**。首帧图、成片都是后面
 // 的事。task_ids 因此恒定回空数组，理由同 handleCanvasChat。
 //
 // # 镜头数是入参
@@ -322,7 +335,9 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 
 	// 上下文取剧本卡自己的血缘上游：那几张卡（用户当初勾选的参考）正是这份
 	// 剧本的风格来源，分镜跟着它们走才不会换一套调子。
-	shots, trace, err := s.generateStoryboard(ctx, derefStr(src.Text), shotCount, pickCards(snap.Cards, src.Refs))
+	shots, trace, bill, err := s.generateStoryboard(ctx,
+		chatCall{userID: p.UserID, projectID: p.ID, cardID: src.ID},
+		derefStr(src.Text), shotCount, pickCards(snap.Cards, src.Refs))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -338,9 +353,11 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 	}
 	revision, err := s.deps.Canvas.Apply(ctx, p.ID, snap.Revision, ops)
 	if err != nil {
+		bill.refund(ctx, err)
 		writeError(w, r, err)
 		return
 	}
+	bill.charge(ctx)
 
 	// 只落一条助手消息，不伪造一条用户消息：这一步是点卡片触发的，用户
 	// 没说过任何话，替他记一句会让对话记录变成假的。
@@ -422,7 +439,9 @@ func (s *server) handleRefineScriptCard(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	draft, trace, err := s.refineScript(ctx, card, instruction, req.ModelID)
+	draft, trace, bill, err := s.refineScript(ctx,
+		chatCall{userID: p.UserID, modelID: req.ModelID, projectID: p.ID, cardID: card.ID},
+		card, instruction)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -441,9 +460,13 @@ func (s *server) handleRefineScriptCard(w http.ResponseWriter, r *http.Request) 
 		},
 	}})
 	if err != nil {
+		bill.refund(ctx, err)
 		writeError(w, r, err)
 		return
 	}
+	// 同步接口的成功点就在这一行：改写后的正文已经落到卡上，用户拿到了
+	// 他买的东西。后面两条对话消息写不进去也不再退——那只影响记录，不影响产物。
+	bill.charge(ctx)
 
 	if _, err := s.deps.Canvases.AppendMessage(ctx, domain.Message{
 		ProjectID:  p.ID,

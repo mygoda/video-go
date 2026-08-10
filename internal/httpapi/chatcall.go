@@ -4,9 +4,12 @@
 // # 为什么这几步是同步的，不走任务链路
 //
 // 剧本和分镜的产物都是**文字**，chat 族本身就是一次 HTTP 往返拿结果（见
-// domain.ProtocolFamily 的注释）。为它建 task 行、冻结积分、走 worker、
-// 再从 SSE 推回来，只是把一次几秒的调用包装成一条永远不会失败得更少的
-// 异步链路，还要用户盯着转圈。因此这两步直接调 driver、直接落卡片。
+// domain.ProtocolFamily 的注释）。把它塞进 worker 再从 SSE 推回来，只是把
+// 一次几秒的调用包装成一条永远不会失败得更少的异步链路，还要用户盯着转圈。
+// 因此这几步直接调 driver、直接落卡片。
+//
+// 不走 worker 不等于不花钱：这几次调用同样烧真 token，因此同样要过计费闸，
+// 只是冻结与结算都在这一次 HTTP 请求内闭环（见 chatbill.go）。
 //
 // 出片是另一回事：一段 4 秒的视频要在上游跑一分多钟，它必须走完整任务链路
 // （落库、冻结、worker、失败退款、SSE）。但出片**不在这两步里发生**——
@@ -129,49 +132,63 @@ func (s *server) userChatModel(ctx context.Context, id string) (domain.ModelConf
 	return m, nil
 }
 
-// chatOnce 打一次 chat 上游，返回回复正文。
+// chatOnce 打一次 chat 上游，返回回复正文与**已经冻结好的那笔账**。
 //
-// step 只用来给这次调用的 id 和日志打标（"script" / "refine"），
-// 好让日志里能分出是哪一步在调，而不是一堆分不清来源的 chat 调用。
+// # 返回的 bill 意味着什么
 //
-// modelID 是这次点名的模型，空串表示按默认规则选（见 chatModel）。
-func (s *server) chatOnce(ctx context.Context, step, modelID, prompt string) (string, chatTrace, error) {
-	model, err := s.chatModel(ctx, modelID)
+// 非 nil 的 bill 表示钱已经冻上了，调用方必须把它结掉：产物落到画布上之后
+// 调 charge，此前的任何失败调 refund。err 非 nil 时 bill 恒为 nil——本函数
+// 内部失败的那几种（上游报错、回复解析不出来）在返回前就已经自己退掉了，
+// 调用方不必也不该再退一次。
+//
+// # 冻结点为什么在这里
+//
+// 选模型、查供应商、读凭证、解 schema、找 driver 这几步全都可能失败，而它们
+// 一次上游都没打，失败是免费的——在它们之前冻结，只是让用户为一次没发生的
+// 调用先垫一笔钱，再靠退款还回去。冻结压到 driver.Invoke 的**前一行**，
+// 「余额不够时上游根本不会被调用」这条才是结构上成立的，而不是靠时序侥幸。
+func (s *server) chatOnce(ctx context.Context, call chatCall) (string, chatTrace, *chatBill, error) {
+	model, err := s.chatModel(ctx, call.modelID)
 	if err != nil {
-		return "", chatTrace{}, err
+		return "", chatTrace{}, nil, err
 	}
 	provider, err := s.deps.Providers.Get(ctx, model.ProviderID)
 	if err != nil {
-		return "", chatTrace{}, err
+		return "", chatTrace{}, nil, err
 	}
 	if !provider.Enabled {
-		return "", chatTrace{}, errInvalid("供应商 %s 当前已禁用", provider.Name)
+		return "", chatTrace{}, nil, errInvalid("供应商 %s 当前已禁用", provider.Name)
 	}
 	credential := os.Getenv(provider.CredentialRef)
 	if strings.TrimSpace(credential) == "" {
-		return "", chatTrace{}, errInvalid(
+		return "", chatTrace{}, nil, errInvalid(
 			"环境变量 %s 未设置，无法调用模型 %s", provider.CredentialRef, model.ID)
 	}
 
 	schema, err := capability.DecodeSchema(model.Capability)
 	if err != nil {
-		return "", chatTrace{}, errInternal(err)
-	}
-
-	in := adapter.SubmitInput{
-		TaskID:         step + "-" + uid.Token(8),
-		Provider:       provider,
-		Model:          model,
-		UpstreamModel:  model.UpstreamModel,
-		Prompt:         prompt,
-		Params:         defaultParams(schema),
-		Credential:     credential,
-		IdempotencyKey: step + "-" + uid.Token(8),
+		return "", chatTrace{}, nil, errInternal(err)
 	}
 
 	driver, err := adapter.ResolveSync(s.deps.Drivers, model)
 	if err != nil {
-		return "", chatTrace{}, errInternal(err)
+		return "", chatTrace{}, nil, errInternal(err)
+	}
+
+	in := adapter.SubmitInput{
+		TaskID:         call.step + "-" + uid.Token(8),
+		Provider:       provider,
+		Model:          model,
+		UpstreamModel:  model.UpstreamModel,
+		Prompt:         call.prompt,
+		Params:         defaultParams(schema),
+		Credential:     credential,
+		IdempotencyKey: call.step + "-" + uid.Token(8),
+	}
+
+	bill, err := s.holdChat(ctx, call, model, schema)
+	if err != nil {
+		return "", chatTrace{}, nil, err
 	}
 
 	// 超时取供应商配置，与 executor.invoke 同一套规则：一个卡住的上游
@@ -189,21 +206,25 @@ func (s *server) chatOnce(ctx context.Context, step, modelID, prompt string) (st
 		ModelID:       model.ID,
 		UpstreamModel: model.UpstreamModel,
 		ProviderID:    provider.ID,
-		PromptChars:   len([]rune(prompt)),
+		PromptChars:   len([]rune(call.prompt)),
 		LatencyMS:     time.Since(start).Milliseconds(),
 	}
 	if err != nil {
+		// 退款用 ctx 而不是 cctx：超时正是要退的那一类失败，
+		// 拿已经到期的 cctx 去写库，退款本身会立刻被取消掉。
+		bill.refund(ctx, err)
 		// driver 返回的已经是带分类码的 *domain.Error，原样上抛即可：
 		// 包一层 internal error 会把 upstream_rate_limited 这类可重试信息抹掉。
-		return "", trace, err
+		return "", trace, nil, err
 	}
 
 	reply, err := chatReplyText(out)
 	if err != nil {
-		return "", trace, err
+		bill.refund(ctx, err)
+		return "", trace, nil, err
 	}
 	trace.ReplyChars = len([]rune(reply))
-	return reply, trace, nil
+	return reply, trace, bill, nil
 }
 
 // chatReplyText 把 driver 回来的产物还原成文本。
