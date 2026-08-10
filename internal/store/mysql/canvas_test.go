@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aigc-pool/aigc-pool/internal/domain"
+	"github.com/aigc-pool/aigc-pool/internal/store"
 	"github.com/aigc-pool/aigc-pool/internal/uid"
 )
 
@@ -397,3 +398,149 @@ func TestCanvasScriptAndShotCards(t *testing.T) {
 func f64(v float64) *float64 { return &v }
 
 func strPtrOf(s string) *string { return &s }
+
+// TestCanvasScriptVersions 钉住剧本卡的核心能力：就地改正文，旧版本不丢。
+//
+// 版本由服务端在保存时追加，而不是靠前端连 text 带 params 一起发——靠前端
+// 配合意味着任何一个忘了带 params 的客户端都会让这次修改无声地不留版本，
+// 而"旧版本没丢"是这张卡存在的一半理由。
+func TestCanvasScriptVersions(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	repo := NewCanvasRepo(db)
+	f := newFixture(t, 0, 1<<30)
+	p := newProject(t, f)
+
+	scriptID := "card_" + uid.Token(8)
+	rev, err := repo.ApplyOps(ctx, p.ID, p.Revision, []domain.CanvasOp{
+		{Type: domain.OpCardCreate, Card: &domain.Card{
+			ID: scriptID, Kind: domain.CardKindScript, Title: "雨夜重逢",
+			Text: strPtrOf("第一稿"), Refs: []string{},
+			Params: map[string]any{"versions": []any{}},
+		}},
+	})
+	requireNoErr(t, err, "create script card")
+
+	// 就地改正文两次：前端的编辑框走的就是这一路，只 patch text。
+	rev, err = repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+		{Type: domain.OpCardUpdate, ID: scriptID, Patch: map[string]any{"text": "第二稿"}},
+	})
+	requireNoErr(t, err, "patch script text once")
+	rev, err = repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+		{Type: domain.OpCardUpdate, ID: scriptID, Patch: map[string]any{
+			"text": "第三稿", "title": "雨夜重逢（改）",
+		}},
+	})
+	requireNoErr(t, err, "patch script text twice")
+
+	card := cardByID(t, repo, p.ID, scriptID)
+	if got := derefStr(card.Text); got != "第三稿" {
+		t.Errorf("current text = %q, want 第三稿", got)
+	}
+	versions := scriptVersionsOf(t, card)
+	if len(versions) != 2 {
+		t.Fatalf("kept %d versions, want 2 (每次保存留一版)", len(versions))
+	}
+	if versions[0].Text != "第一稿" || versions[1].Text != "第二稿" {
+		t.Errorf("versions = %+v, want 第一稿 then 第二稿", versions)
+	}
+	if versions[0].Rev != 1 || versions[1].Rev != 2 {
+		t.Errorf("version revs = %d,%d, want 1,2", versions[0].Rev, versions[1].Rev)
+	}
+	// 标题跟着一起留：只还原正文会让卡片顶着一个属于新版的标题。
+	if versions[1].Title != "雨夜重逢" {
+		t.Errorf("version title = %q, want 雨夜重逢 (改动之前那一版的标题)", versions[1].Title)
+	}
+
+	// 正文没变就不留版本：前端的自动保存会原样重发 patch，为此攒一堆
+	// 一模一样的版本会把版本列表变成噪音。
+	rev, err = repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+		{Type: domain.OpCardUpdate, ID: scriptID, Patch: map[string]any{"text": "第三稿"}},
+	})
+	requireNoErr(t, err, "re-saving identical text")
+	if got := len(scriptVersionsOf(t, cardByID(t, repo, p.ID, scriptID))); got != 2 {
+		t.Errorf("identical re-save added a version: now %d", got)
+	}
+
+	// 回退就是把旧版正文写回去：当前这版作为新的一版留下来，什么也不丢。
+	rev, err = repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+		{Type: domain.OpCardUpdate, ID: scriptID, Patch: map[string]any{"text": "第一稿"}},
+	})
+	requireNoErr(t, err, "roll back to the first draft")
+	card = cardByID(t, repo, p.ID, scriptID)
+	if got := derefStr(card.Text); got != "第一稿" {
+		t.Errorf("after rollback text = %q, want 第一稿", got)
+	}
+	versions = scriptVersionsOf(t, card)
+	if len(versions) != 3 || versions[2].Text != "第三稿" {
+		t.Errorf("rollback lost history: %+v", versions)
+	}
+
+	// 版本历史是只增不改的日志，客户端不能直接改 params——放开它等于让
+	// 客户端能把"上一版写了什么"改成别的内容，这份历史就不再是证据了。
+	requireCode(t, func() error {
+		_, err := repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+			{Type: domain.OpCardUpdate, ID: scriptID, Patch: map[string]any{
+				"params": map[string]any{"versions": []any{}},
+			}},
+		})
+		return err
+	}(), domain.CodeInvalidParam)
+
+	// 建卡时把版本写进近义 key 也要当场顶回来。
+	requireCode(t, func() error {
+		_, err := repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+			{Type: domain.OpCardCreate, Card: &domain.Card{
+				ID: "card_" + uid.Token(8), Kind: domain.CardKindScript, Refs: []string{},
+				Params: map[string]any{"history": []any{}},
+			}},
+		})
+		return err
+	}(), domain.CodeInvalidParam)
+
+	// 非 script 卡改 text 不该被卷进版本这套逻辑：text 卡一直在改正文。
+	textID := "card_" + uid.Token(8)
+	rev, err = repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+		{Type: domain.OpCardCreate, Card: &domain.Card{
+			ID: textID, Kind: domain.CardKindText, Text: strPtrOf("旧"), Refs: []string{},
+		}},
+	})
+	requireNoErr(t, err, "create text card")
+	_, err = repo.ApplyOps(ctx, p.ID, rev, []domain.CanvasOp{
+		{Type: domain.OpCardUpdate, ID: textID, Patch: map[string]any{"text": "新"}},
+	})
+	requireNoErr(t, err, "text card must stay untouched by script versioning")
+	if got := cardByID(t, repo, p.ID, textID); len(got.Params) != 0 {
+		t.Errorf("text card grew params out of nowhere: %#v", got.Params)
+	}
+}
+
+func cardByID(t *testing.T, repo store.CanvasRepo, projectID, cardID string) domain.Card {
+	t.Helper()
+	snap, err := repo.Snapshot(context.Background(), projectID)
+	requireNoErr(t, err, "snapshot")
+	for _, c := range snap.Cards {
+		if c.ID == cardID {
+			return c
+		}
+	}
+	t.Fatalf("card %s is gone from the snapshot", cardID)
+	return domain.Card{}
+}
+
+// scriptVersionsOf 把回读到的 params 还原成版本列表。
+// 走一次 JSON 往返而不是逐 key 断言：库里回来的是 map[string]any，
+// 手写断言要为 rev / at 各写一遍类型转换。
+func scriptVersionsOf(t *testing.T, c domain.Card) []domain.ScriptVersion {
+	t.Helper()
+	sp, err := domain.ParseScriptParams(c.Params)
+	requireNoErr(t, err, "parse script params read back from mysql")
+	return sp.Versions
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}

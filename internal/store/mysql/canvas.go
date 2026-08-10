@@ -582,8 +582,13 @@ func insertCard(ctx context.Context, tx *sql.Tx, projectID string, c domain.Card
 	}
 	// shot 卡的 params 有 schema（见 domain.ShotParams），建卡这一刻就校验：
 	// kind 不在 card.update 的白名单里，一张 shot 卡建错了改不回来。
-	if c.Kind == domain.CardKindShot {
+	switch c.Kind {
+	case domain.CardKindShot:
 		if _, err := domain.ParseShotParams(c.Params); err != nil {
+			return err
+		}
+	case domain.CardKindScript:
+		if _, err := domain.ParseScriptParams(c.Params); err != nil {
 			return err
 		}
 	}
@@ -672,14 +677,17 @@ func updateCard(ctx context.Context, tx *sql.Tx, projectID, cardID string, patch
 		args = append(args, arg)
 	}
 
-	// shot 卡就地改台词 / 改镜头描述走的就是 params 这一路，因此写进去之前
-	// 要过一遍 schema——建卡时校验过而改卡时不校验，等于留了一道后门，
-	// 把台词改进一个拼错的 key 里照样能存下来。多这一次查询只发生在真的
-	// 动了 params 的 patch 上，拖卡片、改标题都不受影响。
-	if _, ok := patch["params"]; ok {
-		if err := checkShotParamsPatch(ctx, tx, projectID, cardID, patch["params"]); err != nil {
-			return err
-		}
+	// shot 卡就地改台词 / 改镜头描述走 params 这一路，script 卡就地改正文走
+	// text 这一路，两者写进去之前都要先看一眼卡片本身是什么 kind——建卡时
+	// 校验过而改卡时不校验，等于留了一道后门。多这一次查询只发生在真的动了
+	// text / params 的 patch 上，拖卡片、改标题都不受影响。
+	extraSet, extraArg, err := patchByKind(ctx, tx, projectID, cardID, patch)
+	if err != nil {
+		return err
+	}
+	if extraSet != "" {
+		sets = append(sets, extraSet)
+		args = append(args, extraArg)
 	}
 
 	args = append(args, cardID, projectID)
@@ -690,31 +698,132 @@ func updateCard(ctx context.Context, tx *sql.Tx, projectID, cardID string, patch
 	if err != nil {
 		return wrap("apply card.update", err)
 	}
-	return requireCardTouched(res, cardID)
+	n, err := affected(res, "apply card.update")
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	// MySQL 的 affected rows 是"真的改了几行"，把同样的值存回去会报 0 行。
+	// 因此 0 行有两种可能：卡片没了，或者这次保存什么也没改。剧本卡的编辑框
+	// 点进去再点出来就会原样重发一次 patch，把它当 not_found 报会让前端以为
+	// 卡片被别人删了，进而拉全量覆盖掉用户正在编辑的内容。
+	return requireCardExists(ctx, tx, projectID, cardID)
 }
 
-// checkShotParamsPatch 在卡片是 shot 时按 domain.ShotParams 校验新的 params。
-//
-// 卡片不存在时返回 nil：紧随其后的 UPDATE 会因为影响 0 行而报 not_found，
-// 由它来报比在这里抢先报一个语义相同的错更少一处分叉。
-func checkShotParamsPatch(ctx context.Context, tx *sql.Tx, projectID, cardID string, value any) error {
-	var kind string
+func requireCardExists(ctx context.Context, tx *sql.Tx, projectID, cardID string) error {
+	var one int
 	err := tx.QueryRowContext(ctx,
-		`SELECT kind FROM canvas_cards
+		`SELECT 1 FROM canvas_cards
 		  WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
-		cardID, projectID).Scan(&kind)
+		cardID, projectID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return notFound("card", cardID)
 	}
 	if err != nil {
-		return wrap("load card kind", err)
+		return wrap("check card exists", err)
 	}
-	if domain.CardKind(kind) != domain.CardKindShot {
-		return nil
+	return nil
+}
+
+// patchByKind 做 card.update 里依赖卡片自身 kind 的那部分处理，必要时返回
+// 一段额外的 SET 片段与它的绑定值。
+//
+// 卡片不存在时返回空：紧随其后的 UPDATE 会因为影响 0 行而报 not_found，
+// 由它来报比在这里抢先报一个语义相同的错更少一处分叉。
+func patchByKind(ctx context.Context, tx *sql.Tx, projectID, cardID string, patch map[string]any) (string, any, error) {
+	newText, patchesText := patch["text"]
+	newParams, patchesParams := patch["params"]
+	if !patchesText && !patchesParams {
+		return "", nil, nil
 	}
 
-	// patch 的值可能是 JSON 解出来的 map，也可能是调用方在 Go 侧直接构造的
-	// domain.ShotParams。统一走一次 JSON 往返，两种形态在这里就没有分支了。
+	var (
+		kind      string
+		title     string
+		text      sql.NullString
+		paramsRaw []byte
+	)
+	err := tx.QueryRowContext(ctx,
+		"SELECT kind, title, `text`, params FROM canvas_cards"+
+			` WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
+		cardID, projectID).Scan(&kind, &title, &text, &paramsRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, wrap("load card for patch", err)
+	}
+
+	switch domain.CardKind(kind) {
+	case domain.CardKindShot:
+		if !patchesParams {
+			return "", nil, nil
+		}
+		return "", nil, checkShotParams(newParams)
+	case domain.CardKindScript:
+		if patchesParams {
+			return "", nil, errScriptParamsNotPatchable()
+		}
+		return scriptVersionSet(title, text.String, paramsRaw, newText)
+	}
+	return "", nil, nil
+}
+
+// scriptVersionSet 把剧本卡**改动之前**的标题与正文追加成一个历史版本。
+//
+// 版本在服务端追加而不是让前端连 text 带 params 一起发：靠前端配合意味着
+// 任何一个忘了带 params 的客户端（或一次直接打 API 的调试请求）都会让这次
+// 修改无声地不留版本，而"旧版本没丢"是这张卡存在的一半理由。同一画布的
+// 所有 op 都在 ApplyOps 的项目行锁里串行，所以"读旧值—算新值—写回"这三步
+// 之间插不进另一次保存。
+//
+// 正文没变就不留版本：前端的自动保存会在用户只拖了一下卡片、或者点进编辑
+// 框又原样点出来时照发 patch，为此攒一堆一模一样的版本会把版本列表变成
+// 噪音，用户反而找不到真正改过的那几版。
+func scriptVersionSet(oldTitle, oldText string, paramsRaw []byte, newText any) (string, any, error) {
+	next, _ := newText.(string) // 非字符串在上面的白名单循环里已经被顶回去了
+	if next == oldText {
+		return "", nil, nil
+	}
+
+	params := map[string]any{}
+	if err := scanJSON(paramsRaw, &params); err != nil {
+		return "", nil, wrap("read script params", err)
+	}
+	sp, err := domain.ParseScriptParams(params)
+	if err != nil {
+		return "", nil, err
+	}
+
+	arg, err := jsonValue(sp.AppendVersion(oldTitle, oldText, time.Now().UTC()))
+	if err != nil {
+		return "", nil, wrap("marshal script versions", err)
+	}
+	return "params = ?", arg, nil
+}
+
+// errScriptParamsNotPatchable 挡住直接改剧本卡 params 的请求。
+//
+// 版本列表是只增不改的日志，放开它等于让客户端能把"上一版写了什么"改成
+// 别的内容，那这份历史就不再是证据了。回退某一版走的是正常的改正文：
+// 把旧版正文 patch 回 text，当前这版会作为新的一版留下来，什么也不会丢。
+func errScriptParamsNotPatchable() error {
+	return &domain.Error{
+		Code:    domain.CodeInvalidParam,
+		Message: "script 卡的 params 存的是版本历史，由服务端维护；改正文请直接 patch text",
+		FieldErrors: []domain.FieldError{{
+			Key: "params", Message: "script 卡不接受直接改 params",
+		}},
+	}
+}
+
+// checkShotParams 按 domain.ShotParams 校验一份新的 params。
+//
+// patch 的值可能是 JSON 解出来的 map，也可能是调用方在 Go 侧直接构造的
+// domain.ShotParams。统一走一次 JSON 往返，两种形态在这里就没有分支了。
+func checkShotParams(value any) error {
 	params := map[string]any{}
 	if value != nil {
 		raw, err := json.Marshal(value)
@@ -725,7 +834,7 @@ func checkShotParamsPatch(ctx context.Context, tx *sql.Tx, projectID, cardID str
 			return invalidParam("card.params must be an object")
 		}
 	}
-	_, err = domain.ParseShotParams(params)
+	_, err := domain.ParseShotParams(params)
 	return err
 }
 

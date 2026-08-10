@@ -1,38 +1,26 @@
-// 画布对话的分镜拆解：把用户发来的一段脚本交给 chat 模型拆成若干镜头，
-// 每个镜头落成画布上的一张卡片，并为每张卡片起一条真的出片任务。
+// 分镜拆解：把一份剧本交给 chat 模型拆成若干镜头。
 //
-// # 拆解本身同步，出片走任务
+// # 本文件当前没有被任何 HTTP 入口调用，这是有意的
 //
-// 拆分镜的产物是**文字**，chat 族本身就是一次 HTTP 往返拿结果（见
-// domain.ProtocolFamily 的注释）。为它建 task 行、冻结积分、走 worker、
-// 再从 SSE 推回来，只是把一次几秒的调用包装成一条永远不会失败得更少的
-// 异步链路，还要用户盯着转圈。因此拆解这一步直接调 driver、直接落卡片。
+// 画布对话这一步现在只产出剧本卡（见 script.go）。拆分镜是紧随其后的
+// 独立一步，由 DEM-84 接上入口。下面这套提示词与解析（尤其是写死 3 个
+// 镜头的那段成本论证）是上一版实测调出来的，删掉再照着注释重写一遍
+// 只会把同样的坑再踩一次，因此原样留在这里等它的入口。
 //
-// 出片是另一回事：一段 4 秒的视频要在上游跑一分多钟。它必须走完整任务链路
-// （落库、冻结、worker、失败退款、SSE），因此 handleCanvasChat 拆完之后
-// 为每张卡片调一次 submitTask，响应里的 task_ids 是**真的任务 id**。
+// 与剧本那一步同理，拆解本身同步：产物是文字，chat 族一次 HTTP 往返就有
+// 结果，包装成异步任务链路只是让用户多盯一会儿转圈（见 chatcall.go）。
 //
-// # 为什么不写死模型
-//
-// 拆解模型走 ModelConfig：优先取配置里的默认分镜模型（AIGC_STORYBOARD_MODEL），
-// 没配就取第一个启用的 chat 族模型。出片模型走技能的 default_model_id。
-// 两边都不写死 id，是因为"改配置不重启不发版"正是 models / skills 表存在的理由。
+// **拆解不出片。** 上一版在这里为每个镜头立刻派一条真视频任务，用户还没
+// 看见任何东西钱就花出去了——那条派发链路已经整个删掉，出片是用户看过、
+// 改过镜头之后另一步的事。
 package httpapi
 
 import (
-	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"os"
 	"strings"
-	"time"
 
-	"github.com/aigc-pool/aigc-pool/internal/adapter"
-	"github.com/aigc-pool/aigc-pool/internal/capability"
 	"github.com/aigc-pool/aigc-pool/internal/domain"
-	"github.com/aigc-pool/aigc-pool/internal/uid"
 )
 
 const (
@@ -42,7 +30,7 @@ const (
 
 	// storyboardDefaultShots 是提示词里要求模型拆出的镜头数。
 	//
-	// **它是一个成本闸门，不是审美选择。** 每个镜头都要真调一次视频模型：
+	// **它是一个成本闸门，不是审美选择。** 每个镜头最终都要真调一次视频模型：
 	// 一段 4 秒 480p 约 80 秒、要花真金白银，12 段就是十几分钟加十几倍的钱，
 	// 而分镜的价值在"看到这个故事被切成了几个画面"，第 4 段之后的边际信息
 	// 迅速趋近于零。取 3 段：足够呈现起承转合，一轮总时长仍在用户愿意等的
@@ -51,12 +39,6 @@ const (
 	// 写进提示词而不是"拆 12 个再砍到 3 个"：砍掉的那 9 个镜头模型已经算过、
 	// token 已经花过，而且被砍掉的往往正是结尾，留下的三段讲不完一个故事。
 	storyboardDefaultShots = 3
-
-	// 新卡片的排布参数。文本卡片按行铺开，宽高与前端文本卡的默认尺寸同量级。
-	storyboardCardW  = 280.0
-	storyboardCardH  = 180.0
-	storyboardGap    = 32.0
-	storyboardPerRow = 4
 )
 
 // storyboardShot 是模型返回的一个镜头。字段名就是喂给模型的 JSON 契约，
@@ -66,172 +48,14 @@ type storyboardShot struct {
 	Description string `json:"description"`
 }
 
-// storyboardTrace 是一次分镜调用的摘要，用于日志与排查。
-// **不含凭证，也不含完整响应体**——只留够回答"这次是不是真的打到上游了"。
-type storyboardTrace struct {
-	ModelID       string
-	UpstreamModel string
-	ProviderID    string
-	PromptChars   int
-	ReplyChars    int
-	Shots         int
-	LatencyMS     int64
-}
-
-// storyboardModel 选出这次分镜要用的模型。
-//
-// 配置里指定了就用指定的那个（并检查它确实是 chat 族——配错时明确报错，
-// 好过拿一个 video 模型去发 chat 请求然后在上游那边失败）。
-func (s *server) storyboardModel(ctx context.Context) (domain.ModelConfig, error) {
-	if id := strings.TrimSpace(s.deps.Config.StoryboardModelID); id != "" {
-		m, err := s.deps.Models.Get(ctx, id)
-		if err != nil {
-			return domain.ModelConfig{}, err
-		}
-		if !m.Enabled {
-			return domain.ModelConfig{}, errInvalid("配置的分镜模型 %s 当前已禁用", id)
-		}
-		if m.Family != domain.FamilyChat {
-			return domain.ModelConfig{}, errInvalid(
-				"配置的分镜模型 %s 的 protocol_family 是 %s，分镜需要 chat", id, m.Family)
-		}
-		return m, nil
-	}
-
-	enabled := true
-	models, err := s.deps.Models.List(ctx, domain.ModelFilter{Enabled: &enabled})
-	if err != nil {
-		return domain.ModelConfig{}, err
-	}
-	for _, m := range models {
-		if m.Family == domain.FamilyChat {
-			return m, nil
-		}
-	}
-	return domain.ModelConfig{}, &domain.Error{
-		Code: domain.CodeInvalidParam,
-		Message: "没有可用的 chat 模型，无法拆分镜；" +
-			"请在管理后台启用一个 protocol_family=chat 的模型，或设置 AIGC_STORYBOARD_MODEL",
-	}
-}
-
-// storyboard 调一次 chat 上游，把脚本拆成镜头。
-//
-// refs 是用户在对话里勾选的卡片，它们的标题与正文作为上下文一起发上去——
-// 「多卡引用为下次输入」如果不真的进入提示词，那个勾选框就只是个装饰。
-func (s *server) storyboard(ctx context.Context, script string, refs []domain.Card) ([]storyboardShot, storyboardTrace, error) {
-	model, err := s.storyboardModel(ctx)
-	if err != nil {
-		return nil, storyboardTrace{}, err
-	}
-	provider, err := s.deps.Providers.Get(ctx, model.ProviderID)
-	if err != nil {
-		return nil, storyboardTrace{}, err
-	}
-	if !provider.Enabled {
-		return nil, storyboardTrace{}, errInvalid("供应商 %s 当前已禁用", provider.Name)
-	}
-	credential := os.Getenv(provider.CredentialRef)
-	if strings.TrimSpace(credential) == "" {
-		return nil, storyboardTrace{}, errInvalid(
-			"环境变量 %s 未设置，无法调用分镜模型 %s", provider.CredentialRef, model.ID)
-	}
-
-	schema, err := capability.DecodeSchema(model.Capability)
-	if err != nil {
-		return nil, storyboardTrace{}, errInternal(err)
-	}
-
-	prompt := storyboardPrompt(script, refs)
-	in := adapter.SubmitInput{
-		TaskID:         "storyboard-" + uid.Token(8),
-		Provider:       provider,
-		Model:          model,
-		UpstreamModel:  model.UpstreamModel,
-		Prompt:         prompt,
-		Params:         defaultParams(schema),
-		Credential:     credential,
-		IdempotencyKey: "storyboard-" + uid.Token(8),
-	}
-
-	driver, err := adapter.ResolveSync(s.deps.Drivers, model)
-	if err != nil {
-		return nil, storyboardTrace{}, errInternal(err)
-	}
-
-	// 超时取供应商配置，与 executor.invoke 同一套规则：一个卡住的上游
-	// 不该把 HTTP handler 一起挂住。
-	cctx := ctx
-	if provider.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		cctx, cancel = context.WithTimeout(ctx, time.Duration(provider.TimeoutMS)*time.Millisecond)
-		defer cancel()
-	}
-
-	start := time.Now()
-	out, err := driver.Invoke(cctx, in)
-	trace := storyboardTrace{
-		ModelID:       model.ID,
-		UpstreamModel: model.UpstreamModel,
-		ProviderID:    provider.ID,
-		PromptChars:   len([]rune(prompt)),
-		LatencyMS:     time.Since(start).Milliseconds(),
-	}
-	if err != nil {
-		// driver 返回的已经是带分类码的 *domain.Error，原样上抛即可：
-		// 包一层 internal error 会把 upstream_rate_limited 这类可重试信息抹掉。
-		return nil, trace, err
-	}
-
-	reply, err := storyboardReplyText(out)
-	if err != nil {
-		return nil, trace, err
-	}
-	trace.ReplyChars = len([]rune(reply))
-
-	shots, err := parseStoryboardShots(reply)
-	if err != nil {
-		return nil, trace, err
-	}
-	trace.Shots = len(shots)
-	return shots, trace, nil
-}
-
-// storyboardReplyText 把 driver 回来的产物还原成文本。
-//
-// chat 族的产物是 KindBase64 + text/plain（见 openaicompat.chatArtifacts），
-// 这里按那个形状解，不认识的形状明确报错而不是当空字符串继续走——
-// 静默的空回复会变成"画布上什么也没多出来"，那正是这次要修掉的症状。
-func storyboardReplyText(out adapter.SubmitResult) (string, error) {
-	for _, a := range out.Inline {
-		if a.Type != domain.AssetTypeText {
-			continue
-		}
-		switch a.Kind {
-		case adapter.KindBase64:
-			raw, err := base64.StdEncoding.DecodeString(a.Base64)
-			if err != nil {
-				return "", errInternal(fmt.Errorf("分镜回复的 base64 解码失败: %w", err))
-			}
-			if text := strings.TrimSpace(string(raw)); text != "" {
-				return text, nil
-			}
-		case adapter.KindURL:
-			return "", errInvalid("分镜模型返回的是 URL 形态的文本产物，暂不支持")
-		}
-	}
-	return "", &domain.Error{
-		Code:      domain.CodeInternal,
-		Message:   "分镜模型返回成功但没有可用的文本内容",
-		Retryable: true,
-	}
-}
-
 // storyboardPrompt 拼出发给模型的那段话。
 //
 // 要求模型只回 JSON 数组：拿自然语言回来还得再写一个中文分镜格式的解析器，
 // 而那个解析器会在模型换一种排版时立刻失效。JSON 至少是可判定的——
 // 解析失败就是解析失败，不会似是而非地拆出半截。
+//
+// （剧本那一步反过来要纯文本，理由见 script.go 的包内注释：一整篇带换行的
+// 散文塞进 JSON 字符串，模型漏转义一次就整篇作废。）
 func storyboardPrompt(script string, refs []domain.Card) string {
 	var b strings.Builder
 	b.WriteString("你是一位分镜师。把下面这段内容拆成若干个连续的镜头。\n\n")
@@ -325,153 +149,4 @@ func storyboardParseError(reply string) error {
 			len([]rune(reply)), head, tail),
 		Retryable: true,
 	}
-}
-
-func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
-}
-
-// storyboardShotPlan 是「这批镜头卡由谁出片」。
-//
-// Model 为 nil 表示这次只落文本卡、不生成——技能没配 default_model_id 时如此。
-// 出片模型来自技能而不是配置项：短剧要视频、产品广告要图，这个差别本来
-// 就记在 skills 表里，再在代码里判一次就等于同一件事有两个出处。
-type storyboardShotPlan struct {
-	Model  *domain.ModelConfig
-	Params map[string]any
-}
-
-// storyboardPlan 按技能查出这批镜头该用哪个模型出片。
-//
-// skillID 为空、或技能没配默认模型，都退回"只落文本卡"——画布上随便说句话
-// 不该悄悄开始烧积分。配了但模型禁用/族别不对则明确报错，不静默退回文本卡：
-// 用户选了「短剧」就是要片子，给他一堆字并告诉他成功了是更坏的结果。
-func (s *server) storyboardPlan(ctx context.Context, skillID string) (storyboardShotPlan, error) {
-	skillID = strings.TrimSpace(skillID)
-	if skillID == "" {
-		return storyboardShotPlan{}, nil
-	}
-	sk, err := s.deps.Skill.Get(ctx, skillID)
-	if err != nil {
-		return storyboardShotPlan{}, err
-	}
-	if sk.DefaultModelID == nil || strings.TrimSpace(*sk.DefaultModelID) == "" {
-		return storyboardShotPlan{}, nil
-	}
-
-	m, err := s.deps.Models.Get(ctx, *sk.DefaultModelID)
-	if err != nil {
-		return storyboardShotPlan{}, err
-	}
-	if !m.Enabled {
-		return storyboardShotPlan{}, errInvalid(
-			"技能「%s」的默认模型 %s 当前已禁用", sk.Name, m.ID)
-	}
-	if _, ok := storyboardCardKind(m.Family); !ok {
-		return storyboardShotPlan{}, errInvalid(
-			"技能「%s」的默认模型 %s 的 protocol_family 是 %s，分镜出片需要 video 或 images",
-			sk.Name, m.ID, m.Family)
-	}
-	return storyboardShotPlan{Model: &m, Params: sk.DefaultParams}, nil
-}
-
-// storyboardCardKind 把出片模型的协议族翻成卡片类型。
-//
-// 卡片的 kind 在建卡时就必须定死：它不在 card.update 的白名单里
-// （见 mysql.cardPatchColumns），事后改不了。
-func storyboardCardKind(f domain.ProtocolFamily) (domain.CardKind, bool) {
-	switch f {
-	case domain.FamilyVideo:
-		return domain.CardKindVideo, true
-	case domain.FamilyImages:
-		return domain.CardKindImage, true
-	default:
-		return "", false
-	}
-}
-
-// storyboardCards 把镜头铺成卡片。
-//
-// 起始纵坐标取现有卡片的最低边之下，新的一批不会盖在旧卡片上；
-// AutoPlaced 置 true，用户手动挪过之后前端会把它翻成 false，
-// 那一片区域就退出自动重排。
-//
-// plan 有模型时建的是 video/image 卡：Prompt 就是待会儿发给出片模型的画面
-// 描述，Text 仍然填上，好让卡片在产物回来之前不是一片空白。
-func storyboardCards(shots []storyboardShot, existing []domain.Card, refs []string, plan storyboardShotPlan, now time.Time) []domain.Card {
-	baseY := 0.0
-	topZ := 0.0
-	for _, c := range existing {
-		if bottom := c.Y + c.H; bottom > baseY {
-			baseY = bottom
-		}
-		if c.Z > topZ {
-			topZ = c.Z
-		}
-	}
-	if len(existing) > 0 {
-		baseY += storyboardGap * 2
-	}
-	if refs == nil {
-		refs = []string{}
-	}
-
-	kind := domain.CardKindText
-	modelID := ""
-	if plan.Model != nil {
-		modelID = plan.Model.ID
-		if k, ok := storyboardCardKind(plan.Model.Family); ok {
-			kind = k
-		}
-	}
-
-	cards := make([]domain.Card, 0, len(shots))
-	for i, sh := range shots {
-		row := i / storyboardPerRow
-		col := i % storyboardPerRow
-		text := sh.Description
-		c := domain.Card{
-			ID:         uid.New(),
-			Kind:       kind,
-			Title:      sh.Title,
-			X:          float64(col) * (storyboardCardW + storyboardGap),
-			Y:          baseY + float64(row)*(storyboardCardH+storyboardGap),
-			W:          storyboardCardW,
-			H:          storyboardCardH,
-			Z:          topZ + float64(i+1),
-			Text:       &text,
-			Refs:       refs,
-			History:    []domain.CardVersion{},
-			AutoPlaced: true,
-			CreatedAt:  now,
-		}
-		if plan.Model != nil {
-			prompt := sh.Description
-			c.Prompt = &prompt
-			c.ModelID = &modelID
-			c.Params = plan.Params
-		}
-		cards = append(cards, c)
-	}
-	return cards
-}
-
-// logStoryboard 记一条可核对的调用摘要。
-//
-// 只记模型、耗时、字数、镜头数——够回答"这次到底有没有打到上游、
-// 上游说了多少话"，又不会把用户脚本原文写进日志。
-func logStoryboard(projectID string, t storyboardTrace) {
-	slog.Info("画布分镜完成",
-		"project_id", projectID,
-		"model_id", t.ModelID,
-		"upstream_model", t.UpstreamModel,
-		"provider_id", t.ProviderID,
-		"prompt_chars", t.PromptChars,
-		"reply_chars", t.ReplyChars,
-		"shots", t.Shots,
-		"latency_ms", t.LatencyMS)
 }

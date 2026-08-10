@@ -680,9 +680,14 @@ paths:
       summary: 画布内对话
       operationId: canvasChat
       description: |
-        走 Chat 协议族。`ref_card_ids` 是「多卡引用为下次输入」的载体（AutoLink 的本质，
-        不需要连线）。Agent 可能在回复中直接产出若干生成任务，其 task_id 一并返回，
-        后续状态走 SSE。
+        创作链路的第一步：把用户的一句话写成一份**剧本**，落成画布上的一张
+        `script` 卡。走 Chat 协议族，同步返回。`ref_card_ids` 是「多卡引用为
+        下次输入」的载体（AutoLink 的本质，不需要连线）。
+
+        **这一步到此为止：不拆镜头，不派任何出片任务，`tasks` 表一行不增。**
+        上一版在这里一次调用就把剧本和分镜两层一起吞掉、直接落 3 张视频卡并
+        为每张卡起一条真视频任务——用户还没看到任何东西，钱已经花出去了。
+        拆分镜是下一步，出片还要更后面。`task_ids` 因此恒定是空数组。
       requestBody:
         required: true
         content:
@@ -694,11 +699,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CanvasChatResponse' }
-        '402':
-          description: 积分不足
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /api/canvas/{projectId}/compose:
     parameters:
@@ -2126,8 +2126,9 @@ components:
           type: string
           enum: [text, image, video, script, shot]
           description: >-
-            script 是剧本卡，正文在 text；shot 是镜头卡，结构化字段在 params
-            （形状见 ShotParams），refs 指回它所属的 script 卡。
+            script 是剧本卡，正文在 text、历史版本在 params（形状见 ScriptParams）；
+            shot 是镜头卡，结构化字段在 params（形状见 ShotParams），refs 指回
+            它所属的 script 卡。
         x: { type: number }
         y: { type: number }
         w: { type: number }
@@ -2140,7 +2141,11 @@ components:
         prompt: { type: [string, 'null'] }
         params:
           type: object
-          description: kind=shot 时形状固定为 ShotParams，多余的键会被拒绝；其余 kind 不约束
+          description: >-
+            kind=shot 时形状固定为 ShotParams，kind=script 时固定为 ScriptParams，
+            两者多余的键都会被拒绝；其余 kind 不约束。**script 卡的 params 由服务端
+            维护，card.update 不接受直接改它**——改正文直接 patch text，服务端会把
+            旧正文追加成一个版本。
           additionalProperties: { $ref: '#/components/schemas/JsonValue' }
         refs:
           type: array
@@ -2160,6 +2165,36 @@ components:
           type: boolean
           description: 用户手动移动过就置 false，该区域不再参与自动重排
         created_at: { $ref: '#/components/schemas/Timestamp' }
+
+    ScriptParams:
+      type: object
+      description: >-
+        kind=script 的卡片 params 的形状。**由服务端维护，客户端不能直接 patch。**
+        当前正文始终在卡片的 text 字段，params 里只放历史版本，两者不重复存。
+        改正文就 patch text，服务端会把改动之前的标题与正文追加成新的一版；
+        回退某一版就是把那一版的正文 patch 回 text，当前这版会作为新的一版留下来。
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          description: >-
+            每次保存之前的旧正文，按 rev 升序，最后一项是上一版。最多保留 50 版，
+            超出后丢最旧的（版号不跟着回退）。
+          items:
+            type: object
+            required: [rev, title, text, at]
+            properties:
+              rev:
+                type: integer
+                minimum: 1
+                description: >-
+                  全局递增的版号，1 是这张卡最初的正文。**不是数组下标**——
+                  截断丢掉最旧几版之后两者就不再相等。当前正文的版号是最后一版加一。
+              title: { type: string, description: 这一版的标题 }
+              text: { type: string, description: 这一版的正文 }
+              at:
+                allOf: [{ $ref: '#/components/schemas/Timestamp' }]
+                description: 这一版被替换掉的时刻，也就是那次保存发生的时间
 
     ShotParams:
       type: object
@@ -2292,16 +2327,25 @@ components:
 
     CanvasChatResponse:
       type: object
-      required: [message_id, revision]
+      required: [message_id, reply_message_id, revision, task_ids, cards]
       properties:
         message_id: { type: string }
+        reply_message_id: { type: string }
         revision:
           type: integer
           format: int64
-          description: 若 agent 直接建了卡片，画布 revision 会推进
+          description: 新建了剧本卡，画布 revision 会推进
         task_ids:
           type: array
+          description: >-
+            **恒定为空数组。** 这一步只写剧本，不出片，因此不会有任何任务被提交。
+            保留这个字段是因为前端读它的 .length，"不派任务"要作为一个明确的
+            事实回过去，而不是一次字段缺失。
           items: { type: string }
+        cards:
+          type: array
+          description: 这一轮新建的卡片，恒定是一张 kind=script 的剧本卡
+          items: { $ref: '#/components/schemas/CanvasCard' }
 
     ####################################################
     # admin —— 配置模型

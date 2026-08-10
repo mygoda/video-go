@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -155,5 +156,74 @@ func TestParseShotParams(t *testing.T) {
 		if len(de.FieldErrors) == 0 {
 			t.Errorf("ParseShotParams(%v) reported no field errors", bad)
 		}
+	}
+}
+
+// TestParseScriptParams 钉住剧本卡的版本列表恒定出现且不接受近义 key。
+//
+// versions 缺席会让前端的版本切换器读到 undefined；把版本写进 history、
+// revisions 这类近义 key 又会被安静存下来，用户看到的是"改了半天一版
+// 没留下"，而这正是剧本卡要解决的问题本身。
+func TestParseScriptParams(t *testing.T) {
+	empty, err := ParseScriptParams(nil)
+	if err != nil {
+		t.Fatalf("empty params were rejected: %v", err)
+	}
+	if empty.Versions == nil {
+		t.Error("versions is nil; the frontend reads .length on it")
+	}
+
+	sp, err := ParseScriptParams(map[string]any{
+		"versions": []any{map[string]any{
+			"rev": 1, "title": "雨夜重逢", "text": "第一稿", "at": "2026-08-10T00:00:00Z",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("a well-formed script params was rejected: %v", err)
+	}
+	if len(sp.Versions) != 1 || sp.Versions[0].Text != "第一稿" {
+		t.Errorf("parsed script params = %+v", sp)
+	}
+
+	for _, bad := range []map[string]any{
+		{"history": []any{}},
+		{"revisions": []any{}},
+		{"versions": []any{}, "text": "正文不该放在 params 里"},
+	} {
+		_, err := ParseScriptParams(bad)
+		var de *Error
+		if !errors.As(err, &de) || de.Code != CodeInvalidParam {
+			t.Errorf("ParseScriptParams(%v) = %v, want invalid_param", bad, err)
+			continue
+		}
+		if len(de.FieldErrors) == 0 {
+			t.Errorf("ParseScriptParams(%v) reported no field errors", bad)
+		}
+	}
+}
+
+// TestScriptParamsAppendVersion 钉住版号是全局递增的，不是数组下标。
+//
+// 截断丢掉最旧几版之后 len 会倒退，用它编号会让新版本拿到一个已经用过的
+// 号，前端的版本列表就会出现两个 v37——用户点「回退到 v37」时无从知道
+// 点中的是哪一版。
+func TestScriptParamsAppendVersion(t *testing.T) {
+	at := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	var sp ScriptParams
+	for i := 0; i < ScriptMaxVersions+5; i++ {
+		sp = sp.AppendVersion("稿", "第 "+strconv.Itoa(i)+" 稿", at)
+	}
+
+	if len(sp.Versions) != ScriptMaxVersions {
+		t.Fatalf("kept %d versions, want the cap %d", len(sp.Versions), ScriptMaxVersions)
+	}
+	last := sp.Versions[len(sp.Versions)-1]
+	if last.Rev != ScriptMaxVersions+5 {
+		t.Errorf("last rev = %d, want %d: 版号必须继续递增，不能跟着截断回退",
+			last.Rev, ScriptMaxVersions+5)
+	}
+	// 留下的是最近的那些版：被丢掉的应该是最旧的开头几版。
+	if sp.Versions[0].Rev != 6 {
+		t.Errorf("first kept rev = %d, want 6", sp.Versions[0].Rev)
 	}
 }
