@@ -90,6 +90,17 @@ type InputSlotSpec struct {
 	MinPixels *PixelSize `json:"min_pixels,omitempty"`
 	MaxPixels *PixelSize `json:"max_pixels,omitempty"`
 	Hint      string     `json:"hint,omitempty"`
+
+	// RequiresSlot 声明本槽只有在另一个槽也有素材时才成立，空串表示无依赖。
+	//
+	// 它存在是因为有些上游把多个语义槽压成**一个按位置定序的数组**：Seedance 的
+	// images[] 收 1~2 张，第 1 张是首帧、第 2 张是尾帧，没有任何字段能表达
+	// 「只给尾帧」。那种提交渲染出来是 images[0]=尾帧，被上游当首帧用——
+	// 产出一条看起来成功、语义却相反的片子。声明依赖让它在提交那一刻被拒，
+	// 而不是变成一次沉默的坏产物。
+	//
+	// 被依赖的槽必须**声明在本槽之前**，由 ValidateSchema 保证，因此不可能成环。
+	RequiresSlot string `json:"requires_slot,omitempty"`
 }
 
 // OptionItem 是 select / aspect_select 的一个选项。

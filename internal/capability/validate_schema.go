@@ -116,6 +116,17 @@ func validateSlot(i int, slot InputSlotSpec, seen map[string]struct{}) []domain.
 	if len(slot.Accept) == 0 {
 		errs = append(errs, domain.FieldError{Key: path + ".accept", Message: "accept 不能为空，否则前端无法预校验文件类型"})
 	}
+	// 只允许指向**已声明过**的槽：既拦住写错的 key，也让依赖不可能成环。
+	// 本槽的 key 在上面已经进了 seen，所以自引用要单独挡一道。
+	if slot.RequiresSlot != "" {
+		_, known := seen[slot.RequiresSlot]
+		if !known || slot.RequiresSlot == slot.Key {
+			errs = append(errs, domain.FieldError{
+				Key:     path + ".requires_slot",
+				Message: "requires_slot 指向了不存在或声明在其后的输入槽 " + slot.RequiresSlot,
+			})
+		}
+	}
 	return errs
 }
 
