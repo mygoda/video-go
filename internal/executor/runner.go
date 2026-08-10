@@ -118,12 +118,12 @@ func (s *Service) Run(ctx context.Context, lease Lease) error {
 	model, provider, err := s.config(ctx, task)
 	if err != nil {
 		// 配置读不到（模型被删、供应商被禁）是我们这边的问题，不扣费。
-		return s.fail(ctx, task, task.Status, internalError("模型或供应商配置不可用", err))
+		return s.fail(ctx, task, task.Status, s.internalError(task.ID, "模型或供应商配置不可用", err))
 	}
 
 	allowed, err := s.breakers.Allow(ctx, provider.ID)
 	if err != nil {
-		return s.fail(ctx, task, task.Status, internalError("熔断器状态不可读", err))
+		return s.fail(ctx, task, task.Status, s.internalError(task.ID, "熔断器状态不可读", err))
 	}
 	if !allowed {
 		// 快速失败并全额退款，比让用户等一个必然超时的调用体验好，
@@ -147,7 +147,7 @@ func (s *Service) Run(ctx context.Context, lease Lease) error {
 				Charged:   false,
 			})
 		}
-		return s.fail(ctx, task, task.Status, internalError("解析输入素材失败", err))
+		return s.fail(ctx, task, task.Status, s.internalError(task.ID, "解析输入素材失败", err))
 	}
 
 	in := adapter.SubmitInput{
@@ -203,7 +203,7 @@ func (s *Service) Run(ctx context.Context, lease Lease) error {
 		// （已由 submitWithRetry 归类）。走到这里说明驱动的 HTTP 调用成功了，
 		// 但响应体里写着 failed——上游没给我们可归类的东西。
 		return s.fail(ctx, task, domain.TaskStatusRunning,
-			internalError("上游在提交阶段即返回失败："+res.RawStatus, nil))
+			s.internalError(task.ID, "上游在提交阶段即返回失败："+res.RawStatus, nil))
 
 	case res.Status == adapter.StatusCanceled:
 		return s.cancelTask(ctx, task, domain.TaskStatusRunning)
@@ -219,7 +219,7 @@ func (s *Service) Run(ctx context.Context, lease Lease) error {
 		req.UpstreamRef = res.UpstreamRef
 		s.rememberInputs(task.ID, inputAssetIDs)
 		if err := s.Schedule(ctx, task.ID, s.pollInterval(model, req)); err != nil {
-			return s.fail(ctx, task, domain.TaskStatusRunning, internalError("登记轮询失败", err))
+			return s.fail(ctx, task, domain.TaskStatusRunning, s.internalError(task.ID, "登记轮询失败", err))
 		}
 		// 租约还给队列：轮询由 ClaimPoll 那条路重新领取，两个池子各扫各的索引，
 		// 不该让一条几分钟的视频任务一直占着提交 worker。
@@ -228,7 +228,7 @@ func (s *Service) Run(ctx context.Context, lease Lease) error {
 
 	default:
 		return s.fail(ctx, task, domain.TaskStatusRunning,
-			internalError("上游既没有返回产物也没有返回任务引用", nil))
+			s.internalError(task.ID, "上游既没有返回产物也没有返回任务引用", nil))
 	}
 }
 
@@ -253,7 +253,7 @@ func (s *Service) submitWithRetry(ctx context.Context, task domain.Task, model d
 			return res, nil
 		}
 
-		terr := classify(err)
+		terr := s.classify(task.ID, err)
 		if IsRetryable(terr.Code) {
 			_ = s.breakers.Failure(ctx, in.Provider.ID)
 		} else {
@@ -292,7 +292,7 @@ func (s *Service) submitWithRetry(ctx context.Context, task domain.Task, model d
 			"delay", delay, "code", terr.Code, "err", err)
 
 		if !sleepCtx(ctx, delay) {
-			terr := internalError("任务在重试等待中被中断", ctx.Err())
+			terr := s.internalError(task.ID, "任务在重试等待中被中断", ctx.Err())
 			return adapter.SubmitResult{}, terr
 		}
 	}
@@ -342,7 +342,7 @@ func (s *Service) invoke(ctx context.Context, model domain.ModelConfig, in adapt
 // 要让用户重跑一次真实生成——代价完全不对等。
 func (s *Service) finish(ctx context.Context, task domain.Task, refs []adapter.ArtifactRef, req adapter.PollRequest, inputAssetIDs []string) error {
 	if s.deps.Transferor == nil {
-		return s.fail(ctx, task, domain.TaskStatusRunning, internalError("未配置转存器，产物无法落地", nil))
+		return s.fail(ctx, task, domain.TaskStatusRunning, s.internalError(task.ID, "未配置转存器，产物无法落地", nil))
 	}
 
 	assets, err := s.deps.Transferor.TransferAll(ctx, task.UserID, task.ID, refs, req)
@@ -477,7 +477,7 @@ func (s *Service) recordLineage(ctx context.Context, task domain.Task, inputAsse
 // 管不住别的进程，而退两次款是真实的钱。
 func (s *Service) fail(ctx context.Context, task domain.Task, expect domain.TaskStatus, terr *domain.TaskError) error {
 	if terr == nil {
-		terr = internalError("任务失败但未给出原因", nil)
+		terr = s.internalError(task.ID, "任务失败但未给出原因", nil)
 	}
 	// 五类失败一律不扣费，且这件事由服务端显式断言而不是让前端推断。
 	terr.Charged = false
@@ -715,7 +715,7 @@ func (s *Service) resolveOne(ctx context.Context, id string) (domain.Asset, erro
 // 情况——网络错、超时、驱动自己的 bug——一律 internal_error 且可重试。
 // **L2 不认识任何上游错误码**，一旦在这里出现按供应商分支的判断，
 // L0 的隔离就破了。
-func classify(err error) *domain.TaskError {
+func (s *Service) classify(taskID string, err error) *domain.TaskError {
 	if err == nil {
 		return nil
 	}
@@ -741,7 +741,7 @@ func classify(err error) *domain.TaskError {
 			Charged:   false,
 		}
 	}
-	return internalError("上游调用失败", err)
+	return s.internalError(taskID, "上游调用失败", err)
 }
 
 // taskCodeOf 把传输层错误码翻译成任务失败分类。只有产品语义的那几个有对应，
@@ -768,8 +768,13 @@ func taskCodeOf(c domain.ErrorCode) (domain.TaskErrorCode, bool) {
 // 原始 error 只进日志不进 Message：Message 是给用户看的，
 // 把 `dial tcp 10.0.0.3:443: connect: connection refused` 显示给他
 // 既解释不了什么，又泄露了内网拓扑。
-func internalError(msg string, cause error) *domain.TaskError {
+//
+// **taskID 是必填的，因为它是那句话与这条日志之间唯一的钩子。** 用户报上来
+// 的只有一句「解析输入素材失败」，没有 task_id 就只能按时间在整个日志里
+// 大海捞针；DEM-94 那次 InnoDB 死锁正是这么被埋了半天。
+func (s *Service) internalError(taskID, msg string, cause error) *domain.TaskError {
 	if cause != nil {
+		s.log.Error(msg, "task_id", taskID, "err", cause)
 		msg = msg + "，请重试"
 	}
 	return &domain.TaskError{

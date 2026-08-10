@@ -1,9 +1,12 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -456,4 +459,44 @@ func TestPollIntervalPrecedence(t *testing.T) {
 	if got := s.pollInterval(unknown, adapter.PollRequest{}); got != 99*time.Second {
 		t.Fatalf("应回落到全局兜底 99s，got %v", got)
 	}
+}
+
+// TestInternalErrorLogsCauseWithTaskID 钉住失败的可定位性。
+//
+// 对用户那句话是刻意脱敏的（「上游调用失败，请重试」），根因不进 Message——
+// 那是对的。代价是排查时手上只剩这句话，于是根因必须在日志里、且必须挂着
+// task_id：没有这个钩子，用户报上来一句「解析输入素材失败」之后，
+// 就只能按时间在整个日志里大海捞针。DEM-94 那次 InnoDB 死锁正是这么被埋掉的。
+func TestInternalErrorLogsCauseWithTaskID(t *testing.T) {
+	var buf bytes.Buffer
+	tasks := newFakeTasks(runningTask())
+	cause := errors.New("Error 1213 (40001): Deadlock found when trying to get lock")
+	drv := &stubDriver{submits: []stubSubmit{{err: cause}}}
+	s := newTestService(t, tasks, drv, func(d *Deps) {
+		d.SubmitRetry = RetryPolicy{MaxAttempts: 1, BaseDelay: 0, MaxDelay: 0, Multiplier: 1}
+		d.Ledger = &fakeLedger{}
+		d.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	})
+
+	task, _ := tasks.Get(context.Background(), "task-1")
+	model, _ := stubModels{}.Get(context.Background(), "model-1")
+	_, terr := s.submitWithRetry(context.Background(), task,
+		model, adapter.SubmitInput{Provider: domain.Provider{ID: "prov-1"}}, adapter.PollRequest{})
+	if terr == nil {
+		t.Fatal("应当失败")
+	}
+
+	// 对外那句话仍然不许带根因：它会显示给用户，泄露内部拓扑。
+	if strings.Contains(terr.Message, cause.Error()) {
+		t.Errorf("对外文案泄露了根因：%q", terr.Message)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, `"task_id":"task-1"`) {
+		t.Errorf("日志里没有 task_id，失败与根因对不上：\n%s", logged)
+	}
+	if !strings.Contains(logged, cause.Error()) {
+		t.Errorf("日志里没有根因 error：\n%s", logged)
+	}
+	t.Logf("失败日志：\n%s", logged)
 }
