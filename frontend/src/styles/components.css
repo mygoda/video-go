@@ -437,6 +437,16 @@ a { color: inherit; text-decoration: none; }
 }
 .canvas-card .shot-meta { font-size: var(--text-2xs); color: var(--text-tertiary); margin-bottom: 6px; }
 .canvas-card .shot-desc { margin: 0; }
+/* 首帧图排在描述之上，高度固定：出图那一步要停下来逐张确认，图得先进视线；
+   固定高度是为了让一批图陆续回来时版式不抖 —— 分镜区一次能排下十几张卡，
+   每回来一张就撑高一格的话，用户正在看的那张会一直往下跑 */
+.canvas-card .shot-frame {
+  position: relative; width: 100%; aspect-ratio: 16/9;
+  margin-bottom: var(--space-2); border-radius: var(--radius-sm);
+  overflow: hidden; background: var(--bg-inset, rgba(255,255,255,.03));
+}
+.canvas-card .shot-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.canvas-card .shot-frame .skeleton { width: 100%; height: 100%; }
 /* 台词单独一块：出片时只有它会被念出来，混在描述里就看不出这一镜有没有人说话 */
 .canvas-card .shot-dialogue {
   margin: var(--space-2) 0 0; padding-left: var(--space-2);

@@ -11,10 +11,17 @@ const STATE_TEXT: Record<FlowStepState, string> = {
 
 interface FlowStatusBarProps {
   script: CanvasCard | null;
-  shotCount: number;
+  shots: CanvasCard[];
   /** 拆分镜在途。这一步是同步接口，一次只能有一个在飞 */
   busy: boolean;
+  /** 批量出首帧在途 */
+  firstFrameBusy: boolean;
+  /** 点一次「出首帧」会排上几镜：没有首帧、且写了镜头描述的那些 */
+  firstFramePending: number;
+  /** 这一批要花多少积分。模型目录还没拉到时为 null */
+  firstFrameCost: number | null;
   onStoryboard(count: number): void;
+  onFirstFrames(): void;
   onAddShot(): void;
   onRemoveShot(): void;
   onResizeShots(count: number): void;
@@ -27,20 +34,25 @@ interface FlowStatusBarProps {
  * 必须一直看得见，不能被别的浮层轮流盖掉。
  *
  * **每一步都停在这里等用户点。** 界面上没有任何一处会自己把流程往下推——
- * 剧本写完不会自动拆分镜，分镜拆完不会自动出片。这是这块 UI 存在的全部理由：
- * 让「过程」成为一个能看见、能改、能重来的对象，而不是一条跑到底的流水线。
+ * 剧本写完不会自动拆分镜，分镜拆完不会自动出首帧，首帧出完不会自动出片。
+ * 这是这块 UI 存在的全部理由：让「过程」成为一个能看见、能改、能重来的对象，
+ * 而不是一条跑到底的流水线。
  */
 export function FlowStatusBar({
   script,
-  shotCount,
+  shots,
   busy,
+  firstFrameBusy,
+  firstFramePending,
+  firstFrameCost,
   onStoryboard,
+  onFirstFrames,
   onAddShot,
   onRemoveShot,
   onResizeShots,
 }: FlowStatusBarProps) {
-  const steps = flowSteps(script, shotCount);
-  const step = currentStep(script, shotCount);
+  const steps = flowSteps(script, shots);
+  const step = currentStep(script, shots);
 
   return (
     <nav className="flow-bar" aria-label="创作流程">
@@ -63,7 +75,11 @@ export function FlowStatusBar({
           <StoryboardAction busy={busy} onStoryboard={onStoryboard} />
         ) : (
           <ShotAction
-            shotCount={shotCount}
+            shotCount={shots.length}
+            firstFrameBusy={firstFrameBusy}
+            firstFramePending={firstFramePending}
+            firstFrameCost={firstFrameCost}
+            onFirstFrames={onFirstFrames}
             onAddShot={onAddShot}
             onRemoveShot={onRemoveShot}
             onResizeShots={onResizeShots}
@@ -113,8 +129,19 @@ function StoryboardAction({ busy, onStoryboard }: Pick<FlowStatusBarProps, 'busy
   );
 }
 
+interface ShotActionProps
+  extends Pick<
+    FlowStatusBarProps,
+    'firstFrameBusy' | 'firstFramePending' | 'firstFrameCost' | 'onFirstFrames' | 'onAddShot' | 'onRemoveShot' | 'onResizeShots'
+  > {
+  shotCount: number;
+}
+
 /**
- * 分镜这一步：加镜 / 删镜 / 调镜数。
+ * 分镜与首帧这一步：加镜 / 删镜 / 调镜数，以及批量出首帧。
+ *
+ * 两步共用一组控件，因为它们作用在同一批镜头卡上：加完一镜，这条线就从
+ * 「首帧都出好了」退回「还差一镜」，控件不该跟着换一套。
  *
  * 「调到 N」的输入框平时跟着实际镜头数走，用户一动才转成他自己的草稿
  * （draft 非 null）；应用完再交还。少了这一步，点完加镜后输入框还停在旧数字，
@@ -122,10 +149,14 @@ function StoryboardAction({ busy, onStoryboard }: Pick<FlowStatusBarProps, 'busy
  */
 function ShotAction({
   shotCount,
+  firstFrameBusy,
+  firstFramePending,
+  firstFrameCost,
+  onFirstFrames,
   onAddShot,
   onRemoveShot,
   onResizeShots,
-}: Pick<FlowStatusBarProps, 'shotCount' | 'onAddShot' | 'onRemoveShot' | 'onResizeShots'>) {
+}: ShotActionProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const text = draft ?? String(shotCount);
   const target = Number(text);
@@ -177,16 +208,37 @@ function ShotAction({
         />
         镜
       </label>
-      <button
-        type="button"
-        className="btn btn-sm"
-        disabled={error !== null || target === shotCount}
-        onClick={apply}
-      >
+      <button type="button" className="btn btn-sm" disabled={error !== null || target === shotCount} onClick={apply}>
         应用
       </button>
+
+      {firstFrameCost !== null && firstFramePending > 0 && (
+        <span className="cost">
+          ⚡<span className="amount mono">{firstFrameCost}</span> 积分
+        </span>
+      )}
+      <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        disabled={firstFrameBusy || firstFramePending === 0}
+        title={
+          firstFramePending === 0
+            ? '每一镜都有首帧了；要换一张就选中那一镜，点卡片上的 ↻'
+            : `把这 ${firstFramePending} 镜排上出图，同时最多 2 张在跑`
+        }
+        aria-describedby="flow-action-hint"
+        onClick={onFirstFrames}
+      >
+        {firstFrameBusy ? '出首帧中…' : `继续：出首帧（${firstFramePending} 镜）`}
+      </button>
+
       <span className={error ? 'hint danger' : 'hint'} id="flow-action-hint" role={error ? 'alert' : undefined}>
-        {error ?? (full ? `已经到上限 ${MAX_SHOTS} 镜，加不了了` : '下一步（首帧图）还没放行')}
+        {error ??
+          (firstFramePending > 0
+            ? full
+              ? `已经到上限 ${MAX_SHOTS} 镜；出图前先把每一镜的描述写好，没写描述的镜头排不上队`
+              : '先看图再出片：这一步只出图，出完停下来等你逐张确认'
+            : '首帧都出好了。不满意就选中那一镜，点卡片上的 ↻ 单独重出；下一步（出片）还没放行')}
       </span>
     </>
   );

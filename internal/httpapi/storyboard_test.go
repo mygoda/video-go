@@ -192,9 +192,12 @@ func TestShotCards(t *testing.T) {
 		if sp.Dialogue != shots[i].Dialogue {
 			t.Errorf("card %d dialogue = %q, want %q", i, sp.Dialogue, shots[i].Dialogue)
 		}
-		// 六个字段恒定序列化，前端直接读，少一个就是一次 undefined
+		// 所有字段恒定序列化，前端直接读，少一个就是一次 undefined
 		// （见 domain.ShotParams 的注释）。
-		for _, key := range []string{"shot_no", "description", "dialogue", "duration_sec", "camera", "shot_size"} {
+		for _, key := range []string{
+			"shot_no", "description", "dialogue", "duration_sec", "camera", "shot_size",
+			"first_frame_asset_id",
+		} {
 			if _, ok := c.Params[key]; !ok {
 				t.Errorf("card %d params is missing %q", i, key)
 			}

@@ -34,11 +34,12 @@ export function readShot(card: CanvasCard): ShotParams {
     duration_sec: Math.max(0, asNumber(params.duration_sec, 0)),
     camera: asText(params.camera),
     shot_size: asText(params.shot_size),
+    first_frame_asset_id: asText(params.first_frame_asset_id),
   };
 }
 
 /**
- * 写回 params 时必须是**完整的**六个字段，不能只带改动的那几个：
+ * 写回 params 时必须是**完整的**全部字段，不能只带改动的那几个：
  * card.update 的 params 是整列覆盖，漏掉的字段会被抹成空。
  * 多带一个后端不认识的键则整批 op 被 400 顶回来。
  */
@@ -50,6 +51,7 @@ export function shotParams(shot: ShotParams): Record<string, JsonValue> {
     duration_sec: shot.duration_sec,
     camera: shot.camera,
     shot_size: shot.shot_size,
+    first_frame_asset_id: shot.first_frame_asset_id,
   };
 }
 

@@ -170,7 +170,7 @@ export type CardKind = 'text' | 'image' | 'video' | 'script' | 'shot';
  * 台词是独立字段，不能并进 description：出片模型音画同步生成，台词进 prompt
  * 才有同步人声，字幕也直接取这个字段。后端对 shot 卡的 params 做白名单校验，
  * 多写一个键（`dialog`、`lines` 这类近义词）整批 op 会被 400 顶回来 ——
- * 所以写回去的对象必须正好是这六个字段。
+ * 所以写回去的对象必须正好是这几个字段。
  */
 export interface ShotParams {
   shot_no: number;
@@ -179,6 +179,13 @@ export interface ShotParams {
   duration_sec: number;
   camera: string;
   shot_size: string;
+  /**
+   * 这一镜的首帧图，空串表示还没出。
+   *
+   * 不挂在 CanvasCard.asset_id 上：出片那一步要把视频往那个字段写，首帧当场
+   * 就没了，history 也会把图和视频混成一串。
+   */
+  first_frame_asset_id: string;
 }
 
 export interface CanvasCard {

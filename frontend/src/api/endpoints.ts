@@ -60,6 +60,8 @@ export const api = {
 
   activeTasks: () => request<Paged<Task>>('/tasks?status=active').then((r) => r.items),
 
+  task: (id: string) => request<Task>(`/tasks/${id}`),
+
   createTask: (payload: {
     model_id: string;
     prompt: string;

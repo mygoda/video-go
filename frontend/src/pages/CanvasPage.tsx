@@ -4,7 +4,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasCard, CanvasOp, CanvasState, ShotParams } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
-import { qk, useCanvas, useMe, useProjects } from '@/api/queries';
+import { qk, useCanvas, useMe, useModels, useProjects } from '@/api/queries';
+import { useSubmitTask } from '@/hooks/useSubmitTask';
+import { defaultValues } from '@/schema/form';
+import { estimateCost } from '@/schema/pricing';
+import type { ModelCapabilitySchema } from '@/schema/types';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { useViewport } from '@/canvas/useViewport';
@@ -17,6 +21,13 @@ import { ComposeBar } from '@/canvas/ComposeBar';
 import { FlowStatusBar } from '@/canvas/FlowStatusBar';
 import { ScriptVersionsPanel } from '@/canvas/ScriptVersionsPanel';
 import { activeScript, MAX_SHOTS } from '@/canvas/flow';
+import {
+  firstFrameConcurrency,
+  firstFramePrompt,
+  runWithGate,
+  shotsAwaitingFirstFrame,
+  waitForTask,
+} from '@/canvas/firstFrame';
 import type { ScriptVersion } from '@/canvas/script';
 import { readShot, relayoutShots, shotParams, shotSlot, shotsOf, SHOT_CARD_H, SHOT_CARD_W } from '@/canvas/shot';
 
@@ -48,6 +59,11 @@ export function CanvasPage() {
   const { data: me } = useMe(isAuthed);
   const { data: projects } = useProjects();
   const { data: canvas, isLoading } = useCanvas(projectId);
+  // 出首帧用图片目录里的第一个模型。目录接口只返回 enabled 且 public 的模型，
+  // 所以这里不需要——也不允许——把模型 id 写死在前端（check-no-model-ids.mjs 会拦）。
+  const { data: imageModels } = useModels('image');
+  const firstFrameModel = imageModels?.[0] ?? null;
+  const submitTask = useSubmitTask();
   const qc = useQueryClient();
 
   const [viewportEl, setViewportEl] = useState<HTMLDivElement | null>(null);
@@ -68,6 +84,12 @@ export function CanvasPage() {
   // 拆分镜是同步接口，一次只放一个在飞：连点两下会拆出两组镜头卡，
   // 用户看到的是同一个剧本下莫名其妙多了一倍的镜头。
   const [storyboarding, setStoryboarding] = useState(false);
+  // 批量出首帧在途。它只挡「再点一次批量」，不挡单张重出——那两件事作用在
+  // 不同的镜头上，互相拦住只会让用户以为界面卡了。
+  const [firstFrameBusy, setFirstFrameBusy] = useState(false);
+  // 正在出首帧的那几镜。按卡片 id 记而不是记一个总数：骨架屏要精确显示在
+  // 那几张卡上，而闸门下同时在飞的永远只是其中两张。
+  const [framesInFlight, setFramesInFlight] = useState<ReadonlySet<string>>(new Set());
   const [dockCollapsed, setDockCollapsed] = useState(false);
   // 拖卡片的中间位置只落在这里，松手才写进缓存并排队上行
   const dragRef = useRef<DragState | null>(null);
@@ -85,6 +107,16 @@ export function CanvasPage() {
   // 没选就是最新的那份。加镜 / 删镜 / 调镜数都作用在它名下。
   const flowScript = useMemo(() => activeScript(cards, selectedId), [cards, selectedId]);
   const flowShots = useMemo(() => (flowScript ? shotsOf(cards, flowScript.id) : []), [cards, flowScript]);
+
+  // 点一次「出首帧」会排上几镜。已经有图的、没写描述的都不算——前者重出要
+  // 一张一张来，后者提交上去只会换回一次 400。
+  const pendingFrames = useMemo(() => shotsAwaitingFirstFrame(flowShots).length, [flowShots]);
+  // 这一批的报价。单张按模型默认参数算，乘以镜数：镜头越多这一步越贵，
+  // 数字得在点下去之前就摆在按钮旁边。
+  const firstFrameCost = useMemo(
+    () => (firstFrameModel ? estimateCost(firstFrameModel, defaultValues(firstFrameModel), {}) * pendingFrames : null),
+    [firstFrameModel, pendingFrames],
+  );
 
   const refCards = useMemo(
     () => (selected && !droppedRefs.includes(selected.id) ? [selected] : []),
@@ -224,6 +256,7 @@ export function CanvasPage() {
           duration_sec: 0,
           camera: '',
           shot_size: '',
+          first_frame_asset_id: '',
         }),
         refs: [script.id],
         history: [],
@@ -292,6 +325,104 @@ export function CanvasPage() {
     } finally {
       setStoryboarding(false);
     }
+  }
+
+  /**
+   * 把出好的首帧挂回镜头卡。
+   *
+   * 卡片从缓存里现取而不是用闭包里那张：一批图要跑好几分钟，用户完全可能在
+   * 等图的时候把某一镜的描述改了。拿旧快照拼 params 会把他刚写的字覆盖掉，
+   * 而 card.update 的 params 是整列覆盖，覆盖了就找不回来。
+   */
+  function linkFirstFrame(cardId: string, assetId: string): void {
+    const current = qc.getQueryData<CanvasState>(qk.canvas(projectId))?.cards.find((c) => c.id === cardId);
+    if (!current) return;
+    const params = shotParams({ ...readShot(current), first_frame_asset_id: assetId });
+    enqueue([{ type: 'card.update', id: cardId, patch: { params } }], (prev) => ({
+      ...prev,
+      cards: prev.cards.map((c) => (c.id === cardId ? { ...c, params } : c)),
+    }));
+  }
+
+  /**
+   * 出一镜的首帧：提交、等它走到终态、把产物挂回这张卡。
+   *
+   * **提交时不带 cardId**：后端拿到 card_id 会在任务成功时把产物直接写进
+   * canvas_cards.asset_id，而出片那一步要往同一个字段写视频——首帧当场就没了，
+   * 卡片的 history 还会把图和视频混成一串。首帧是镜头的属性，归 params 管，
+   * 所以这一条关联由前端在任务成功后自己写。
+   *
+   * 代价说清楚：这中间关掉页面，图还在资产库里，但这一镜不会自动关联上，
+   * 得重出一次。
+   */
+  async function generateFirstFrame(model: ModelCapabilitySchema, card: CanvasCard): Promise<void> {
+    setFramesInFlight((prev) => new Set(prev).add(card.id));
+    try {
+      const res = await submitTask({
+        model,
+        prompt: firstFramePrompt(readShot(card)),
+        values: defaultValues(model),
+        inputs: {},
+        canvasId: projectId,
+      });
+      if (!res.ok) {
+        toast(res.error.message, 'danger');
+        return;
+      }
+      const task = await waitForTask(res.taskId);
+      const asset = task.assets?.[0];
+      if (task.status !== 'succeeded' || !asset) {
+        toast(task.error?.message ?? `第 ${readShot(card).shot_no} 镜的首帧没出来`, 'danger');
+        return;
+      }
+      linkFirstFrame(card.id, asset.id);
+    } finally {
+      setFramesInFlight((prev) => {
+        const next = new Set(prev);
+        next.delete(card.id);
+        return next;
+      });
+    }
+  }
+
+  /**
+   * 批量出首帧：这一步也是**用户点出来的**，分镜拆完不会自己走到这里，
+   * 出完也不会自己往下走到出片——形状与 runStoryboard 一致，没有任何
+   * useEffect 会调到它。
+   *
+   * 并发交给 runWithGate 卡住：上游按并发限流，一口气把 12 镜全推上去会整批
+   * 拿到 429，而重试还是 429。排队才是解。
+   */
+  async function runFirstFrames(): Promise<void> {
+    if (!firstFrameModel || firstFrameBusy) return;
+    // 用户很可能刚改完某一镜的描述，那次 patch 还压在防抖里；不冲干净就会
+    // 拿改之前的旧描述去出图。
+    await flush();
+    const targets = shotsAwaitingFirstFrame(flowShots);
+    if (!targets.length) return;
+    setFirstFrameBusy(true);
+    try {
+      await runWithGate(targets, firstFrameConcurrency(firstFrameModel), (card) =>
+        generateFirstFrame(firstFrameModel, card),
+      );
+      await flush();
+      await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+    } finally {
+      setFirstFrameBusy(false);
+    }
+  }
+
+  /** 单张重出：只动这一镜，另外几镜的首帧原样留着。 */
+  async function rerunFirstFrame(card: CanvasCard): Promise<void> {
+    if (!firstFrameModel || framesInFlight.has(card.id)) return;
+    await flush();
+    if (!firstFramePrompt(readShot(card))) {
+      toast('这一镜还没写镜头描述，先写一句再出图', 'danger');
+      return;
+    }
+    await generateFirstFrame(firstFrameModel, card);
+    await flush();
+    await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
   }
 
   /**
@@ -414,9 +545,13 @@ export function CanvasPage() {
 
       <FlowStatusBar
         script={flowScript}
-        shotCount={flowShots.length}
+        shots={flowShots}
         busy={storyboarding}
+        firstFrameBusy={firstFrameBusy}
+        firstFramePending={pendingFrames}
+        firstFrameCost={firstFrameCost}
         onStoryboard={(count) => void runStoryboard(count)}
+        onFirstFrames={() => void runFirstFrames()}
         onAddShot={() => flowScript && appendShots(flowScript, 1)}
         onRemoveShot={() => flowScript && removeShots(flowScript, 1)}
         onResizeShots={resizeShots}
@@ -462,6 +597,7 @@ export function CanvasPage() {
                 lineage={lineageIds.has(card.id)}
                 dimmed={Boolean(selectedId) && card.id !== selectedId && !lineageIds.has(card.id)}
                 pickIndex={picks.indexOf(card.id) + 1}
+                firstFramePending={framesInFlight.has(card.id)}
                 onSelect={onCardClick}
                 onDragStart={onCardDragStart}
                 onEditStart={setEditingId}
@@ -499,12 +635,19 @@ export function CanvasPage() {
               <button
                 type="button"
                 className="icon-btn"
-                title="重跑（片段重拍）"
-                aria-label="重跑"
-                // 重跑要拿模型重出一件产物，只有图片 / 视频卡有这回事；
-                // 剧本和镜头的正文是用户写的，改它走就地编辑。
-                disabled={selected.kind !== 'image' && selected.kind !== 'video'}
-                onClick={() => setRerunOpen(true)}
+                title={selected.kind === 'shot' ? '重出这一镜的首帧' : '重跑（片段重拍）'}
+                aria-label={selected.kind === 'shot' ? '重出首帧' : '重跑'}
+                // 重跑要拿模型重出一件产物：图片 / 视频卡是换一张产物，镜头卡是
+                // 换一张首帧。剧本的正文是用户写的，改它走就地编辑。
+                disabled={
+                  selected.kind === 'shot'
+                    ? !firstFrameModel || framesInFlight.has(selected.id)
+                    : selected.kind !== 'image' && selected.kind !== 'video'
+                }
+                onClick={() => {
+                  if (selected.kind === 'shot') void rerunFirstFrame(selected);
+                  else setRerunOpen(true);
+                }}
               >
                 ↻
               </button>

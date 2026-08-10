@@ -112,6 +112,7 @@ func TestShotParamsJSONContract(t *testing.T) {
 
 	for _, key := range []string{
 		"shot_no", "description", "dialogue", "duration_sec", "camera", "shot_size",
+		"first_frame_asset_id",
 	} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("shot params 少了字段 %q：前端会读到 undefined", key)
@@ -126,12 +127,17 @@ func TestParseShotParams(t *testing.T) {
 	ok, err := ParseShotParams(map[string]any{
 		"shot_no": 2, "description": "推近", "dialogue": "你终于来了",
 		"duration_sec": 4, "camera": "手持跟拍", "shot_size": "特写",
+		"first_frame_asset_id": "as_1",
 	})
 	if err != nil {
 		t.Fatalf("a well-formed shot was rejected: %v", err)
 	}
 	if ok.ShotNo != 2 || ok.Dialogue != "你终于来了" || ok.DurationSec != 4 {
 		t.Errorf("parsed shot params = %+v", ok)
+	}
+	// 首帧图挂在 params 上而不是 Card.AssetID：出片那一步要往 AssetID 写视频。
+	if ok.FirstFrameAssetID != "as_1" {
+		t.Errorf("first_frame_asset_id = %q, want %q", ok.FirstFrameAssetID, "as_1")
 	}
 
 	// 空 params 放行：镜头卡可以先建出来再填。

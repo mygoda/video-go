@@ -18,6 +18,13 @@ interface CanvasCardViewProps {
   dimmed: boolean;
   /** 合成模式下的片段序号（从 1 起）；未入选为 0。序号即成片里的先后 */
   pickIndex: number;
+  /**
+   * 这一镜的首帧正在出。
+   *
+   * 不走 card.task_id：那个字段是「这张卡自己的产物在跑」，出片那一步要用它，
+   * 首帧任务借来占着，两件事就再也分不开了。
+   */
+  firstFramePending: boolean;
   onSelect(id: string): void;
   onDragStart(e: React.PointerEvent, card: CanvasCard): void;
   onEditStart(id: string): void;
@@ -50,6 +57,7 @@ export function CanvasCardView({
   lineage,
   dimmed,
   pickIndex,
+  firstFramePending,
   onSelect,
   onDragStart,
   onEditStart,
@@ -111,7 +119,7 @@ export function CanvasCardView({
       {card.kind === 'script' ? (
         <ScriptCardBody card={card} />
       ) : card.kind === 'shot' ? (
-        <ShotCardBody card={card} />
+        <ShotCardBody card={card} firstFramePending={firstFramePending} />
       ) : card.kind === 'text' ? (
         <div className="body">{card.text}</div>
       ) : pending ? (

@@ -112,8 +112,9 @@ type Card struct {
 // 见 000014 迁移的注释：canvas_cards 已经有增删改查、软删、revision 推进和
 // 回放，再造一张表换不来新能力，只换来两份必须同步演进的代码。
 //
-// 六个字段全部恒定序列化（不加 omitempty），理由同 Card.Title：前端直接读，
-// 少一个字段就是一次白屏；空串 / 0 是合法值（这一镜没写台词、时长还没定）。
+// 所有字段恒定序列化（不加 omitempty），理由同 Card.Title：前端直接读，
+// 少一个字段就是一次白屏；空串 / 0 是合法值（这一镜没写台词、时长还没定、
+// 首帧还没出）。
 type ShotParams struct {
 	// ShotNo 是镜号，从 1 开始。它是镜头在剧本内的顺序，也是拼片的依据。
 	ShotNo int `json:"shot_no"`
@@ -128,12 +129,20 @@ type ShotParams struct {
 	Camera string `json:"camera"`
 	// ShotSize 是景别，如「特写」「中景」「全景」。自由文本，理由同 Camera。
 	ShotSize string `json:"shot_size"`
+	// FirstFrameAssetID 是这一镜的首帧图，空串表示还没出。
+	//
+	// 它不能挂在 Card.AssetID 上：出片那一步要把视频往同一个字段写，首帧当场
+	// 就没了，Card.History 也会把图和视频混成一串。首帧是镜头的一个**属性**
+	// （「这一镜长什么样」），不是画布上另一个可以单独摆位、单独引用的对象，
+	// 所以它跟镜号、台词一样住在 params 里。
+	FirstFrameAssetID string `json:"first_frame_asset_id"`
 }
 
 // shotParamKeys 是 ShotParams 全部合法的 JSON key，用于拒绝未知字段。
 var shotParamKeys = map[string]struct{}{
 	"shot_no": {}, "description": {}, "dialogue": {},
 	"duration_sec": {}, "camera": {}, "shot_size": {},
+	"first_frame_asset_id": {},
 }
 
 // ParseShotParams 把 shot 卡的 params 解成 ShotParams 并校验。

@@ -2238,7 +2238,7 @@ components:
         kind=shot 的卡片 params 的形状。台词是**独立字段**，不能并进
         description：出片模型（Seedance 2.0）音画同步生成，台词进 prompt 就有
         同步人声，字幕也直接取这个字段，两者都要求台词能被单独拎出来。
-      required: [shot_no, description, dialogue, duration_sec, camera, shot_size]
+      required: [shot_no, description, dialogue, duration_sec, camera, shot_size, first_frame_asset_id]
       properties:
         shot_no:
           type: integer
@@ -2260,6 +2260,11 @@ components:
         shot_size:
           type: string
           description: 景别，自由文本
+        first_frame_asset_id:
+          type: string
+          description: >-
+            这一镜的首帧图，空串表示还没出。**不放在 CanvasCard.asset_id 上**：
+            出片那一步要把视频往那个字段写，首帧当场就没了。
 
     CanvasMessage:
       type: object
