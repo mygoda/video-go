@@ -700,6 +700,42 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/CanvasChatResponse' }
 
+  /api/canvas/{projectId}/storyboard:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      tags: [canvas]
+      summary: 把一张剧本卡拆成镜头卡
+      operationId: canvasStoryboard
+      description: |
+        创作链路的第二步：把 `card_id` 指向的那张 `script` 卡拆成 N 张 `shot` 卡，
+        每张卡的 `refs` 指回来源剧本卡，`params.shot_no` 从 1 起连续编号。
+        走 Chat 协议族，同步返回。
+
+        **由用户在剧本卡上主动发起，剧本那一步不会自动走到这里。**
+
+        **这一步只落文字，一分钱不花：** 拆镜头本身走 chat 模型
+        （`AIGC_STORYBOARD_MODEL`），除此之外不派任何出片任务，`tasks` 表一行不增。
+        首帧图与成片都在后面的步骤。`task_ids` 因此恒定是空数组。
+
+        台词由模型单独拆进每一镜的 `params.dialogue`，不与 `params.description`
+        混在一起——出片时台词进 prompt 才有同步人声，字幕也直接取这个字段。
+        没有台词的镜头 `dialogue` 是空串。
+
+        `shot_count` 不传取 3；上限 12，越界返回 `invalid_param` 而**不**静默截断
+        （少掉的镜头在画布上没有任何痕迹，用户只会以为模型没拆完）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CanvasStoryboardRequest' }
+      responses:
+        '202':
+          description: 已受理
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CanvasStoryboardResponse' }
+
   /api/canvas/{projectId}/compose:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -2345,6 +2381,48 @@ components:
         cards:
           type: array
           description: 这一轮新建的卡片，恒定是一张 kind=script 的剧本卡
+          items: { $ref: '#/components/schemas/CanvasCard' }
+
+    CanvasStoryboardRequest:
+      type: object
+      required: [card_id]
+      properties:
+        card_id:
+          type: string
+          description: 要拆的那张 kind=script 卡片的 id
+        shot_count:
+          type: integer
+          minimum: 1
+          maximum: 12
+          default: 3
+          description: >-
+            要拆出多少个镜头。不传取 3；超过 12 返回 invalid_param，不静默截断。
+            上限不是性能考虑，是防止模型把一句话拆成四十个镜头把画布糊满，
+            也是给下一步出片的账单封顶。
+
+    CanvasStoryboardResponse:
+      type: object
+      required: [reply_message_id, revision, task_ids, cards]
+      properties:
+        reply_message_id:
+          type: string
+          description: >-
+            这一步落进对话的助手消息。**没有对应的用户消息**——它是点剧本卡
+            触发的，用户没说过话，替他记一句会让对话记录变成假的。
+        revision:
+          type: integer
+          format: int64
+          description: 新建了 N 张镜头卡，画布 revision 会推进
+        task_ids:
+          type: array
+          description: >-
+            **恒定为空数组。** 这一步只落文字，不出图也不出片，因此不会有任何
+            任务被提交。保留这个字段的理由同 CanvasChatResponse。
+          items: { type: string }
+        cards:
+          type: array
+          description: >-
+            这一轮新建的镜头卡，按镜号升序；每张 kind=shot，refs 指回来源剧本卡
           items: { $ref: '#/components/schemas/CanvasCard' }
 
     ####################################################
