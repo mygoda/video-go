@@ -449,8 +449,9 @@ func (s *server) cancelTask(ctx context.Context, t domain.Task) (domain.Task, er
 		return domain.Task{}, err
 	}
 	if _, err := s.deps.Ledger.Refund(ctx, t.UserID, t.ID, "task canceled"); err != nil {
-		// 退款失败必须留痕：钱还冻着，得有人能查出来。但任务确实已取消了，
+		// 退款真失败时必须留痕：钱还冻着，得有人能查出来。但任务确实已取消了，
 		// 回一个 500 会让前端以为取消没成功而重试，反而更糟。
+		// 撞上幂等闸（executor 已经退过）不算失败，logRefund 里分开处理。
 		s.logRefund(t.ID, err)
 	}
 

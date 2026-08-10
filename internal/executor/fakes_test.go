@@ -133,10 +133,16 @@ func (f *fakeTasks) Stats(context.Context, time.Duration, string) (domain.TaskSt
 }
 
 // fakeLedger 记账，只关心 Charge / Refund 被调了几次、金额多少。
+//
+// chargeErr / refundErr 用来注入账本侧的错误，区分"幂等闸挡下的重复结算"
+// 与"真的没写进去"这两条分支各自该记什么日志。
 type fakeLedger struct {
 	mu      sync.Mutex
 	charged []int
 	refunds int
+
+	chargeErr error
+	refundErr error
 }
 
 func (l *fakeLedger) Hold(context.Context, string, string, int) (domain.LedgerEntry, error) {
@@ -146,6 +152,9 @@ func (l *fakeLedger) Hold(context.Context, string, string, int) (domain.LedgerEn
 func (l *fakeLedger) Charge(_ context.Context, _, _ string, amount int) (domain.LedgerEntry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.chargeErr != nil {
+		return domain.LedgerEntry{}, l.chargeErr
+	}
 	l.charged = append(l.charged, amount)
 	return domain.LedgerEntry{}, nil
 }
@@ -153,6 +162,9 @@ func (l *fakeLedger) Charge(_ context.Context, _, _ string, amount int) (domain.
 func (l *fakeLedger) Refund(context.Context, string, string, string) (domain.LedgerEntry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.refundErr != nil {
+		return domain.LedgerEntry{}, l.refundErr
+	}
 	l.refunds++
 	return domain.LedgerEntry{}, nil
 }
@@ -334,6 +346,61 @@ func (r stubRegistry) Names() []string { return []string{string(domain.VideoProt
 // 但它不该淹没 go test 的失败信息。
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// capturedRecord 是一条被捕获的日志，只留断言需要的三样。
+type capturedRecord struct {
+	level slog.Level
+	msg   string
+}
+
+// logCapture 收集日志记录，供"这条路径记的是 ERROR 还是 Info、写了什么"这类断言使用。
+//
+// 断言日志级别与措辞看起来是在测字符串，但这里日志**就是**产物：
+// 「需人工对账」是发给运维的行动指令，误发一次就有人去查一笔不存在的欠账。
+type logCapture struct {
+	mu      sync.Mutex
+	records []capturedRecord
+}
+
+func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, capturedRecord{level: r.Level, msg: r.Message})
+	return nil
+}
+
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+
+func (c *logCapture) logger() *slog.Logger { return slog.New(c) }
+
+// errorsLogged 返回全部 ERROR 及以上的消息。
+func (c *logCapture) errorsLogged() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, r := range c.records {
+		if r.level >= slog.LevelError {
+			out = append(out, r.msg)
+		}
+	}
+	return out
+}
+
+// messagesBelowError 返回全部低于 ERROR 的消息。
+func (c *logCapture) messagesBelowError() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, r := range c.records {
+		if r.level < slog.LevelError {
+			out = append(out, r.msg)
+		}
+	}
+	return out
 }
 
 // newTestService 组装一个只接了被测依赖的 Service。

@@ -104,7 +104,7 @@ func (l *ledger) Charge(ctx context.Context, userID, taskID string, actual int) 
 			return err
 		}
 		if settled {
-			return conflict("task "+taskID+" has already been settled", nil)
+			return conflict("task "+taskID+" has already been settled", billing.ErrAlreadySettled)
 		}
 		if actual > held {
 			return invalidParam(
@@ -158,7 +158,10 @@ func (l *ledger) Refund(ctx context.Context, userID, taskID string, reason strin
 		if settled {
 			// 幂等的边界：已结算的任务再退一次会把钱凭空变多。
 			// 重复的失败回调是常态（webhook + 轮询同时判失败），必须挡住。
-			return conflict("task "+taskID+" has already been settled", nil)
+			//
+			// cause 带上 billing.ErrAlreadySettled，是为了让调用方能把这一种
+			// conflict 与"真的没退成"分开——两者的 Code 都是 conflict。
+			return conflict("task "+taskID+" has already been settled", billing.ErrAlreadySettled)
 		}
 		entry.Amount = held
 		_, err = appendLedgerTx(ctx, tx, &entry, -held)

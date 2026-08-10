@@ -2,9 +2,11 @@ package mysql
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/aigc-pool/aigc-pool/internal/billing"
 	"github.com/aigc-pool/aigc-pool/internal/domain"
 	"github.com/aigc-pool/aigc-pool/internal/uid"
 )
@@ -57,6 +59,111 @@ func TestLedgerHoldCharge(t *testing.T) {
 	// 重复的失败/成功回调是常态（webhook 与轮询同时判定），必须挡住。
 	requireCode(t, func() error { _, err := l.Charge(ctx, f.userID, task.ID, 1); return err }(), domain.CodeConflict)
 	requireCode(t, func() error { _, err := l.Refund(ctx, f.userID, task.ID, "dup"); return err }(), domain.CodeConflict)
+}
+
+// TestLedgerRefundSettlesOnce 钉住取消任务时那场真实存在的竞争的结果：
+// HTTP 取消接口与 executor 发现终态后**都会**调 Refund，谁先到谁退成，
+// 晚到的那条撞上幂等闸——只有一笔 refund 落库，余额精确。
+//
+// 这里按线上实际观察到的顺序串行发两笔（executor 先、HTTP 晚一步），而不是
+// 起两个 goroutine 抢：两条路径隔着一次 HTTP 往返，真正同一瞬间进入事务
+// 是另一码事，而那一码事目前挡不住（见随本票提交的说明）。本用例要钉的是
+// 「晚到的那笔不改变余额，且带得出 ErrAlreadySettled」。
+func TestLedgerRefundSettlesOnce(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	f := newFixture(t, 100, 1<<30)
+	l := NewLedger(db)
+	task := f.newTask(t, 8)
+
+	_, err := l.Hold(ctx, f.userID, task.ID, 8)
+	requireNoErr(t, err, "hold")
+
+	// executor 先到：reason 与线上那条落库的流水一致。
+	_, err = l.Refund(ctx, f.userID, task.ID, "任务已取消")
+	requireNoErr(t, err, "executor 的退款")
+
+	before, err := l.Balance(ctx, f.userID)
+	requireNoErr(t, err, "balance after the winning refund")
+
+	// HTTP 取消接口晚一步：撞上幂等闸。
+	_, lateErr := l.Refund(ctx, f.userID, task.ID, "task canceled")
+	// 对外仍是 409——这条修复不改语义，只改调用方怎么读它。
+	requireCode(t, lateErr, domain.CodeConflict)
+	if !errors.Is(lateErr, billing.ErrAlreadySettled) {
+		t.Fatalf("幂等闸挡下的 conflict 必须带 ErrAlreadySettled，否则调用方无从与真故障分开：%v", lateErr)
+	}
+
+	// 只有一笔 refund 落库——「钱没有凭空变多」的直接证据。
+	var refundRows, refundTotal int
+	requireNoErr(t, db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM credit_ledger
+		 WHERE user_id = ? AND task_id = ? AND type = 'refund'`,
+		f.userID, task.ID).Scan(&refundRows, &refundTotal), "count refund rows")
+	if refundRows != 1 {
+		t.Fatalf("落库的 refund 有 %d 笔，幂等闸没挡住", refundRows)
+	}
+	if refundTotal != 8 {
+		t.Errorf("退款金额合计 %d，应等于当初冻结的 8", refundTotal)
+	}
+
+	// 被挡下的那笔一分钱都不该动：冻结额度在第一笔里就释放了，账是平的。
+	after, err := l.Balance(ctx, f.userID)
+	requireNoErr(t, err, "balance after the blocked refund")
+	if after != before {
+		t.Fatalf("被幂等闸挡下的退款改变了余额：%+v -> %+v", before, after)
+	}
+	if after.Available != 100 || after.Held != 0 {
+		t.Fatalf("退款后余额 = %+v，应是 available 100 / held 0", after)
+	}
+
+	// 把流水打出来，便于人工核对「hold −8 / refund +8」这一对。
+	rows, err := db.QueryContext(ctx,
+		`SELECT type, amount, balance_after, reason FROM credit_ledger
+		 WHERE user_id = ? AND task_id = ? ORDER BY id`, f.userID, task.ID)
+	requireNoErr(t, err, "dump ledger")
+	defer rows.Close()
+	for rows.Next() {
+		var typ, reason string
+		var amount, balanceAfter int
+		requireNoErr(t, rows.Scan(&typ, &amount, &balanceAfter, &reason), "scan ledger row")
+		t.Logf("ledger: type=%-6s amount=%+d balance_after=%d reason=%s", typ, amount, balanceAfter, reason)
+	}
+	requireNoErr(t, rows.Err(), "iterate ledger")
+}
+
+// TestSettledConflictIsDistinguishableFromOtherConflicts 是判别精度的证明。
+//
+// 账本里 conflict 不止幂等闸一个来源：唯一键撞了（这里用重复的充值幂等键）
+// 同样是 409，但那是一次**真的没写进去**的写入。两者的 Code 一模一样，
+// 只有错误链上的哨兵能把它们分开——调用方若按 Code 判，就会把真故障
+// 当成"另一条路径已经做完了"静默掉。
+func TestSettledConflictIsDistinguishableFromOtherConflicts(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	f := newFixture(t, 100, 1<<30)
+	l := NewLedger(db)
+
+	task := f.newTask(t, 10)
+	_, err := l.Hold(ctx, f.userID, task.ID, 10)
+	requireNoErr(t, err, "hold")
+	_, err = l.Refund(ctx, f.userID, task.ID, "task canceled")
+	requireNoErr(t, err, "first refund")
+
+	_, settledErr := l.Refund(ctx, f.userID, task.ID, "任务已取消")
+	requireCode(t, settledErr, domain.CodeConflict)
+	if !errors.Is(settledErr, billing.ErrAlreadySettled) {
+		t.Fatalf("幂等闸挡下的 conflict 必须带 ErrAlreadySettled，实际 %v", settledErr)
+	}
+
+	key := "topup_" + uid.Token(10)
+	_, err = l.Topup(ctx, f.userID, 50, "seed", "", key)
+	requireNoErr(t, err, "topup")
+	_, dupErr := l.Topup(ctx, f.userID, 50, "seed", "", key)
+	requireCode(t, dupErr, domain.CodeConflict)
+	if errors.Is(dupErr, billing.ErrAlreadySettled) {
+		t.Fatalf("唯一键冲突不是「已结算」，不该带 ErrAlreadySettled：%v", dupErr)
+	}
 }
 
 // TestLedgerPartialChargeAndRefund 覆盖少收与全退两条分支。

@@ -33,9 +33,25 @@ package billing
 
 import (
 	"context"
+	"errors"
 
 	"github.com/aigc-pool/aigc-pool/internal/domain"
 )
+
+// ErrAlreadySettled 是幂等闸挡下重复结算时挂在错误链上的哨兵。
+//
+// Charge / Refund 在任务已被 charge 或 refund 过时返回 domain.CodeConflict，
+// 这是**正确行为**：重复的失败回调是常态（webhook 与轮询同时判失败、
+// HTTP 取消与 executor 同时退款），挡不住就会把钱凭空变多。
+//
+// 但调用方光看 conflict 分不出"幂等闸挡的"与"真的没写进去"——外键指向的
+// 行不存在、唯一键撞了同样归 409（见 store/mysql 的 wrap）。因此把这个
+// 哨兵作为 cause 挂进去，让调用方用 errors.Is 精确判定，而不是靠错误码
+// 或字符串猜。判错的代价是把真事故降级成 Info 静默掉。
+//
+// **它只标记"钱已经结清了"，不标记"这次调用做了什么"** ——
+// 冻结额度在前一次结算时就已经释放，因此收到它时账面必然是平的。
+var ErrAlreadySettled = errors.New("billing: task has already been settled")
 
 // Ledger 是积分账本。
 //
@@ -50,6 +66,10 @@ import (
 // 超出部分只能平台自己承担。
 //
 // Refund 释放冻结额度，失败或取消时调用。
+//
+// Charge / Refund 撞上已结算的任务时返回 domain.CodeConflict，错误链上带
+// ErrAlreadySettled；调用方要区分"幂等挡下的重复结算"与"真的没写进去"，
+// 必须用 errors.Is 判这个哨兵，光看 Code 分不出来。
 //
 // Topup 是管理员手工充值（不接支付网关，PRD 定的）。amount 为正是充值、
 // 为负是扣减。idempotencyKey 必填，防止管理员重复点击充两次；
