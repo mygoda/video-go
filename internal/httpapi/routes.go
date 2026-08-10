@@ -72,6 +72,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/projects/{projectId}/canvas", user(s.handleGetCanvas))
 	mux.Handle("PATCH /api/projects/{projectId}/canvas", user(s.handlePatchCanvas))
 	mux.Handle("POST /api/canvas/{projectId}/chat", user(s.handleCanvasChat))
+	mux.Handle("POST /api/canvas/{projectId}/storyboard", user(s.handleCanvasStoryboard))
 	mux.Handle("POST /api/canvas/{projectId}/compose", user(s.handleCanvasCompose))
 
 	// ── SSE ─────────────────────────────────────────────────────

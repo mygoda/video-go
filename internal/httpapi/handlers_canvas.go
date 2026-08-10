@@ -262,6 +262,104 @@ func (s *server) handleCanvasChat(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCanvasStoryboard 把一张剧本卡拆成 N 张镜头卡。
+//
+// 创作链路的第二步，由用户点着某张剧本卡主动发起——**剧本那一步不会自动
+// 往下走**。理由同 handleCanvasChat：每一层都得先停下来让用户看一眼、改一改，
+// 而链路一旦自动跑到底，中间那几层就又只是过程，不是能改的对象了。
+//
+// # 这一步只落文字，一分钱不花
+//
+// 拆镜头本身走 chat 模型（AIGC_STORYBOARD_MODEL），成本可忽略；除了那一次
+// chat 调用，**不派任何出片任务，`tasks` 表一行不增**。首帧图、成片都是后面
+// 的事。task_ids 因此恒定回空数组，理由同 handleCanvasChat。
+//
+// # 镜头数是入参
+//
+// 不传取 storyboardDefaultShots，上限 storyboardMaxShots，越界当场报错。
+// 写死一个用户看不见的常量当成本闸门，代价是想要 5 个镜头的人在界面上
+// 找不到任何地方能说这句话——见 storyboard.go 里那两个常量的注释。
+func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) {
+	p, err := s.ownedProject(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var req struct {
+		CardID    string `json:"card_id"`
+		ShotCount *int   `json:"shot_count"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if strings.TrimSpace(req.CardID) == "" {
+		writeError(w, r, errFields(
+			[]domain.FieldError{{Key: "card_id", Message: "必填，要拆的那张剧本卡"}}, "参数校验未通过"))
+		return
+	}
+	shotCount, err := resolveShotCount(req.ShotCount)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+
+	snap, err := s.deps.Canvas.Snapshot(ctx, p.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	src, err := storyboardSource(snap.Cards, strings.TrimSpace(req.CardID))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// 上下文取剧本卡自己的血缘上游：那几张卡（用户当初勾选的参考）正是这份
+	// 剧本的风格来源，分镜跟着它们走才不会换一套调子。
+	shots, trace, err := s.generateStoryboard(ctx, derefStr(src.Text), shotCount, pickCards(snap.Cards, src.Refs))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	logChatCall("storyboard", p.ID, trace)
+
+	cards := shotCards(shots, src.ID, snap.Cards, s.now())
+	ops := make([]domain.CanvasOp, 0, len(cards))
+	cardIDs := make([]string, 0, len(cards))
+	for i := range cards {
+		ops = append(ops, domain.CanvasOp{Type: domain.OpCardCreate, Card: &cards[i]})
+		cardIDs = append(cardIDs, cards[i].ID)
+	}
+	revision, err := s.deps.Canvas.Apply(ctx, p.ID, snap.Revision, ops)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// 只落一条助手消息，不伪造一条用户消息：这一步是点卡片触发的，用户
+	// 没说过任何话，替他记一句会让对话记录变成假的。
+	reply, err := s.deps.Canvases.AppendMessage(ctx, domain.Message{
+		ProjectID:  p.ID,
+		Role:       domain.MessageRoleAssistant,
+		Content:    storyboardReply(src.Title, len(cards), trace.ModelID),
+		RefCardIDs: cardIDs,
+		CreatedAt:  s.now(),
+	})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"reply_message_id": reply.ID,
+		"revision":         revision,
+		"task_ids":         []string{},
+		"cards":            cards,
+	})
+}
+
 // pickCards 按 id 从快照里挑出卡片，顺序随 ids。
 // 找不到的 id 直接跳过：前端本地删过卡片但引用列表没同步是常态，
 // 为此回一个 404 只会让用户的一句话发不出去。
