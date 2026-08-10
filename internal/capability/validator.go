@@ -76,9 +76,10 @@ func NewValidator(e Evaluator) Validator {
 //
 // 关于 MIME 与像素约束（InputSlotSpec.Accept / MinPixels / MaxPixels）：
 // Submission.Inputs 里只有 upload_id / asset_id，没有文件本身的元信息，
-// 这里判不了。这两项的服务端把关在上传落库那一步（upload 记录带 MIME 与尺寸），
-// 放在这里会变成一次按 id 回查存储的 IO，且校验器就不再是纯函数了。
-// 因此本方法只校验**槽的存在性与数量**。
+// 这里判不了——判了校验器就不再是纯函数，还要多一次按 id 回查存储的 IO。
+// 它们的服务端把关在 HTTP 层：提交任务时本来就要按 id 取一遍 upload 做归属校验，
+// 顺路拿到 MIME 与宽高（见 httpapi.assertInputUploads）。
+// 因此本方法只校验**槽的存在性、数量与槽间依赖**。
 //
 // 关于 EnabledWhen 为假的参数：**不拒绝**。前端把它渲染成禁用态但仍会随表单提交
 // （submitParams 只按 VisibleWhen 过滤），拒绝它会把所有带 enabled_when 的模型
@@ -138,8 +139,25 @@ func (v validator) validateInputs(schema ModelCapabilitySchema, sub Submission) 
 				Message: fmt.Sprintf("%s最多 %d 个", slot.Label, slot.MaxCount),
 			})
 		}
+		if n > 0 && slot.RequiresSlot != "" && len(sub.Inputs[slot.RequiresSlot]) == 0 {
+			errs = append(errs, domain.FieldError{
+				Key:     slot.Key,
+				Message: fmt.Sprintf("%s需要同时提供%s", slot.Label, slotLabel(schema, slot.RequiresSlot)),
+			})
+		}
 	}
 	return errs
+}
+
+// slotLabel 把槽 key 换成给人看的名字；找不到就退回 key——
+// 依赖指向不存在的槽由 ValidateSchema 负责报，这里不该再报一次。
+func slotLabel(schema ModelCapabilitySchema, key string) string {
+	for _, s := range schema.Inputs {
+		if s.Key == key {
+			return s.Label
+		}
+	}
+	return key
 }
 
 func (v validator) validateParams(schema ModelCapabilitySchema, sub Submission, ctx EvalContext) []domain.FieldError {

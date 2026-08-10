@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -133,9 +134,11 @@ func (s *server) submitTask(ctx context.Context, userID string, req createTaskRe
 	if fields := s.deps.Validator.Validate(schema, sub); len(fields) > 0 {
 		return domain.Task{}, false, errFields(fields, "参数校验未通过")
 	}
-	// 输入槽引用的 upload 必须是本人的。校验器只管"槽填得对不对"，
-	// 管不到"这个 upload_id 是谁的"——少了这一步，猜到一个 id 就能拿别人的图去生成。
-	if err := s.assertOwnsUploads(ctx, userID, req.Inputs); err != nil {
+	// 输入槽引用的 upload 必须是本人的，且要满足槽声明的文件约束。校验器只管
+	// "槽填得对不对"，管不到"这个 upload_id 是谁的、那张图多大"——少了归属校验，
+	// 猜到一个 id 就能拿别人的图去生成；少了尺寸校验，一张 200×200 的首帧要等到
+	// 几十秒后上游 failed 才知道，而钱已经冻上了。
+	if err := s.assertInputUploads(ctx, userID, schema, req.Inputs); err != nil {
 		return domain.Task{}, false, err
 	}
 
@@ -207,8 +210,22 @@ func (s *server) submitTask(ctx context.Context, userID string, req createTaskRe
 	return task, true, nil
 }
 
-// assertOwnsUploads 校验 inputs 里引用的每个 upload 都属于调用方。
-func (s *server) assertOwnsUploads(ctx context.Context, userID string, inputs map[string][]string) error {
+// assertInputUploads 校验 inputs 里引用的每个 upload 都属于调用方，
+// 并按 InputSlotSpec 核对文件本身的约束（MIME / 字节数 / 像素）。
+//
+// 文件约束为什么落在这里而不是 capability.Validator：那一层只拿得到 upload_id，
+// 判文件属性就得回查存储，校验器也就不再是纯函数（见它的头注释）。而这里本来
+// 就要为归属校验把每个 upload 取一遍，元信息顺手就在手上，多这几个判断不多一次 IO。
+//
+// 为什么不放在上传那一步：上传时还不知道这份素材要挂到哪个模型的哪个槽上，
+// 而约束是**按槽**声明的——同一张 200×200 的图对参考图槽合法、对首帧槽不合法。
+func (s *server) assertInputUploads(ctx context.Context, userID string, schema capability.ModelCapabilitySchema, inputs map[string][]string) error {
+	specs := make(map[string]capability.InputSlotSpec, len(schema.Inputs))
+	for _, spec := range schema.Inputs {
+		specs[spec.Key] = spec
+	}
+
+	var fields []domain.FieldError
 	for slot, ids := range inputs {
 		for _, uploadID := range ids {
 			if uploadID == "" {
@@ -229,9 +246,44 @@ func (s *server) assertOwnsUploads(ctx context.Context, userID string, inputs ma
 					{Key: slot, Message: "上传对象 " + uploadID + " 不存在或已过期"},
 				}, "参数校验未通过")
 			}
+			spec, ok := specs[slot]
+			if !ok {
+				// 未知槽已由 Validator 报过，这里不重复报。
+				continue
+			}
+			if msg := checkUploadAgainstSlot(spec, u); msg != "" {
+				fields = append(fields, domain.FieldError{Key: slot, Message: msg})
+			}
 		}
 	}
+	if len(fields) > 0 {
+		return errFields(fields, "参数校验未通过")
+	}
 	return nil
+}
+
+// checkUploadAgainstSlot 判定一份已落库的 upload 是否满足槽声明，合法返回空串。
+//
+// 宽高为 nil 表示解不出尺寸（视频、webp——见 imageDimensions）。此时**放行**：
+// 声明了 min_pixels 就拒掉所有解不出尺寸的图，会把 webp 这类合法输入一并误伤。
+func checkUploadAgainstSlot(spec capability.InputSlotSpec, u domain.Upload) string {
+	if len(spec.Accept) > 0 && !slices.Contains(spec.Accept, u.MIME) {
+		return "不支持的文件类型 " + u.MIME + "，仅支持 " + strings.Join(spec.Accept, " / ")
+	}
+	if spec.MaxBytes > 0 && u.Bytes > spec.MaxBytes {
+		return "文件 " + itoa(int(u.Bytes)) + " 字节，超过上限 " + itoa(int(spec.MaxBytes)) + " 字节"
+	}
+	if u.Width == nil || u.Height == nil {
+		return ""
+	}
+	w, h := *u.Width, *u.Height
+	if p := spec.MinPixels; p != nil && (w < p.Width || h < p.Height) {
+		return "尺寸 " + itoa(w) + "×" + itoa(h) + " 小于下限 " + itoa(p.Width) + "×" + itoa(p.Height)
+	}
+	if p := spec.MaxPixels; p != nil && (w > p.Width || h > p.Height) {
+		return "尺寸 " + itoa(w) + "×" + itoa(h) + " 超过上限 " + itoa(p.Width) + "×" + itoa(p.Height)
+	}
+	return ""
 }
 
 func (s *server) handleListTasks(w http.ResponseWriter, r *http.Request) {

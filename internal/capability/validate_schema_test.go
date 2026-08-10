@@ -74,6 +74,37 @@ func TestValidateSchema(t *testing.T) {
 			want: []string{"inputs[1].key"},
 		},
 		{
+			name:   "requires_slot 指向不存在的槽",
+			mutate: func(s *ModelCapabilitySchema) { s.Inputs[0].RequiresSlot = "nope" },
+			want:   []string{"inputs[0].requires_slot"},
+		},
+		{
+			name:   "requires_slot 指向自己",
+			mutate: func(s *ModelCapabilitySchema) { s.Inputs[0].RequiresSlot = "ref" },
+			want:   []string{"inputs[0].requires_slot"},
+		},
+		{
+			// 只允许向前依赖，因此依赖不可能成环。
+			name: "requires_slot 指向声明在其后的槽",
+			mutate: func(s *ModelCapabilitySchema) {
+				s.Inputs[0].RequiresSlot = "later"
+				s.Inputs = append(s.Inputs, InputSlotSpec{
+					Key: "later", Label: "后", Kind: "image", MaxCount: 1,
+					Accept: []string{"image/png"}, MaxBytes: 1024,
+				})
+			},
+			want: []string{"inputs[0].requires_slot"},
+		},
+		{
+			name: "requires_slot 指向声明在其前的槽",
+			mutate: func(s *ModelCapabilitySchema) {
+				s.Inputs = append(s.Inputs, InputSlotSpec{
+					Key: "later", Label: "后", Kind: "image", MaxCount: 1,
+					Accept: []string{"image/png"}, MaxBytes: 1024, RequiresSlot: "ref",
+				})
+			},
+		},
+		{
 			name: "toggle 却带了 options",
 			mutate: func(s *ModelCapabilitySchema) {
 				s.Params[0] = ParamSpec{

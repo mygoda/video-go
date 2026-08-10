@@ -58,6 +58,9 @@ export function validateForm(
       errors[slot.key] = `${slot.label}为必填`;
     } else if (files.length > slot.max_count) {
       errors[slot.key] = `${slot.label}最多 ${slot.max_count} 个`;
+    } else if (slot.requires_slot && files.length > 0 && !(inputs[slot.requires_slot] ?? []).length) {
+      const dep = model.inputs.find((s) => s.key === slot.requires_slot);
+      errors[slot.key] = `${slot.label}需要同时提供${dep?.label ?? slot.requires_slot}`;
     }
   }
 

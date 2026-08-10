@@ -171,6 +171,44 @@ func TestValidateRequiredSlotAndDisabledOption(t *testing.T) {
 	}
 }
 
+// TestValidateRequiresSlot 钉住「尾帧不能单独提交」。
+//
+// Seedance 的 images[] 按位置定序，只给尾帧会渲染成 images[0]=尾帧，
+// 被上游当首帧用——一条 200、看着成功、语义相反的片子。所以这必须在提交期就拒。
+func TestValidateRequiresSlot(t *testing.T) {
+	schema := ModelCapabilitySchema{
+		ID: "m", Name: "M", Modality: domain.ModalityVideo, Enabled: true,
+		Inputs: []InputSlotSpec{
+			{Key: "first_frame", Label: "首帧", Kind: "image", MaxCount: 1, Accept: []string{"image/png"}, MaxBytes: 1},
+			{Key: "last_frame", Label: "尾帧", Kind: "image", MaxCount: 1, Accept: []string{"image/png"}, MaxBytes: 1, RequiresSlot: "first_frame"},
+		},
+		Pricing: PricingSpec{Currency: "credit", Base: 1, Rounding: RoundCeil},
+		ETA:     EtaSpec{P50Seconds: 1, P90Seconds: 2},
+		Limits:  LimitSpec{MaxConcurrentPerUser: 1, PromptMaxLength: 10},
+	}
+	v := NewValidator(nil)
+
+	errs := v.Validate(schema, Submission{Inputs: map[string][]string{"last_frame": {"up_1"}}})
+	if keys := errKeys(errs); len(keys) != 1 || keys[0] != "last_frame" {
+		t.Fatalf("只传尾帧应被拒，got %v", keys)
+	}
+	if msg := errs[0].Message; msg != "尾帧需要同时提供首帧" {
+		t.Fatalf("报错该点名依赖的槽，got %q", msg)
+	}
+
+	both := Submission{Inputs: map[string][]string{"first_frame": {"up_1"}, "last_frame": {"up_2"}}}
+	if errs := v.Validate(schema, both); len(errs) != 0 {
+		t.Fatalf("首尾帧一起传应放行，got %+v", errs)
+	}
+	only := Submission{Inputs: map[string][]string{"first_frame": {"up_1"}}}
+	if errs := v.Validate(schema, only); len(errs) != 0 {
+		t.Fatalf("只传首帧应放行，got %+v", errs)
+	}
+	if errs := v.Validate(schema, Submission{}); len(errs) != 0 {
+		t.Fatalf("两个槽都空应放行，got %+v", errs)
+	}
+}
+
 func TestValidateEnabledWhenFalseIsAccepted(t *testing.T) {
 	// enabled_when 为假 = 前端渲染成禁用态但仍随表单提交，服务端不应拒。
 	schema := loadExamples(t)["hailuo-2-3"]
