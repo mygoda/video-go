@@ -175,7 +175,7 @@ func (s *Service) pollOne(ctx context.Context, lease Lease) error {
 func (s *Service) advance(ctx context.Context, task domain.Task) error {
 	model, provider, err := s.config(ctx, task)
 	if err != nil {
-		return s.fail(ctx, task, task.Status, internalError("模型或供应商配置不可用", err))
+		return s.fail(ctx, task, task.Status, s.internalError(task.ID, "模型或供应商配置不可用", err))
 	}
 
 	name := driverName(model)
@@ -185,7 +185,7 @@ func (s *Service) advance(ctx context.Context, task domain.Task) error {
 		// （family 从 video 改成了 chat），任务已经没人能推进了，判失败退款
 		// 比让它永远挂在 running 上好。
 		return s.fail(ctx, task, task.Status,
-			internalError(fmt.Sprintf("协议 %q 不支持轮询", name), nil))
+			s.internalError(task.ID, fmt.Sprintf("协议 %q 不支持轮询", name), nil))
 	}
 
 	req := s.pollRequest(task, model, provider)
@@ -223,14 +223,14 @@ func (s *Service) advance(ctx context.Context, task domain.Task) error {
 	case adapter.StatusSucceeded:
 		if len(res.Artifacts) == 0 {
 			return s.fail(ctx, task, domain.TaskStatusRunning,
-				internalError("上游报告成功但没有返回任何产物", nil))
+				s.internalError(task.ID, "上游报告成功但没有返回任何产物", nil))
 		}
 		return s.finish(ctx, task, res.Artifacts, req, s.recallInputs(ctx, task))
 
 	case adapter.StatusFailed:
 		terr := res.Err
 		if terr == nil {
-			terr = internalError("上游返回失败但未给出原因", nil)
+			terr = s.internalError(task.ID, "上游返回失败但未给出原因", nil)
 		}
 		terr.Charged = false
 		if IsRetryable(terr.Code) {
@@ -275,7 +275,7 @@ func (s *Service) reschedule(ctx context.Context, task domain.Task, model domain
 // 一次已经花掉的真实生成。因此这里按 PollRetry（比提交更密集、更有耐心）
 // 退避重排下一次轮询，只有把次数用尽才判失败。
 func (s *Service) pollFailed(ctx context.Context, task domain.Task, model domain.ModelConfig, provider domain.Provider, cause error) error {
-	terr := classify(cause)
+	terr := s.classify(task.ID, cause)
 	if IsRetryable(terr.Code) {
 		_ = s.breakers.Failure(ctx, provider.ID)
 	} else {

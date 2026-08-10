@@ -105,6 +105,26 @@ func (r *assetRepo) Create(ctx context.Context, a domain.Asset) (domain.Asset, e
 	}
 
 	err = withTx(ctx, r.db, func(tx *sql.Tx) error {
+		// **用量更新必须排在 INSERT 前面。** 反过来写会死锁：assets 有指向
+		// users 的外键，INSERT 时 InnoDB 要对那一行 users 加 S 锁，随后的
+		// UPDATE 又要 X 锁，单事务内是一次 S→X 升级。同一个用户的两件产物
+		// 并发落库时两个事务都先拿到 S、又都等对方放掉 S 才升得了 X，
+		// 互等成环，InnoDB 检出死锁回滚其中一个（Error 1213）。批量出首帧
+		// 一次排 3 镜、出片一次排 N 段，撞上它是必然而不是偶然。
+		//
+		// 先 UPDATE 就没有升级这一步：X 锁一次到手，后面 INSERT 做外键检查
+		// 要的 S 锁被同事务已持有的 X 覆盖，直接放行。所有事务的取锁顺序
+		// 一致，环也就构不成。
+		//
+		// 用户不存在时这条 UPDATE 影响 0 行且不报错——拦下它的仍然是下面
+		// INSERT 的外键，不必在这里再判一次行数。
+		if a.Bytes > 0 {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE users SET storage_used_bytes = storage_used_bytes + ? WHERE id = ?`,
+				a.Bytes, a.UserID); err != nil {
+				return wrap("charge storage usage", err)
+			}
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO assets
 			 (id, user_id, task_id, type, storage_key, thumb_key, poster_key,
@@ -115,13 +135,6 @@ func (r *assetRepo) Create(ctx context.Context, a domain.Asset) (domain.Asset, e
 			a.MIME, a.Bytes, nullInt(a.Width), nullInt(a.Height), nullInt(a.DurationMS),
 			source, createdAt.UTC()); err != nil {
 			return wrap("create asset", err)
-		}
-		if a.Bytes > 0 {
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE users SET storage_used_bytes = storage_used_bytes + ? WHERE id = ?`,
-				a.Bytes, a.UserID); err != nil {
-				return wrap("charge storage usage", err)
-			}
 		}
 		return nil
 	})
