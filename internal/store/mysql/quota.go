@@ -10,10 +10,15 @@ import (
 
 // quotaGuard 是 asset.QuotaGuard 的 MySQL 实现。
 //
-// 预占与提交都记在 users.storage_used_bytes 这一个列上：预占不单独开一张表，
+// 预占记在 users.storage_used_bytes 这一个列上：预占不单独开一张表，
 // 因为"预占中"与"已占用"对配额检查的效果完全一样（都占着空间），
 // 而多一张表就多一份要对账的状态。真相仍然是 assets 表逐条求和，
 // Recompute 据此校正漂移。
+//
+// **这个列上谁写什么，是一条必须守住的分工**：已落库资产的字节由
+// AssetRepo.Create / Delete 在写 assets 行的同一个事务里加减，本类型只负责
+// 那些**还没有 assets 行的字节**（即预占）。两边都往同一个列上加实际字节，
+// 结果就是一次转存记两遍（DEM-98：全库 ratio 精确 2.000）。
 type quotaGuard struct{ db *sql.DB }
 
 // NewQuotaGuard 构造 asset.QuotaGuard。
@@ -62,40 +67,45 @@ func (g *quotaGuard) Reserve(ctx context.Context, userID string, bytes int64) er
 	})
 }
 
-// Commit 用实际字节数落实预占（预估与实际总有偏差，多退少补）。
+// Commit 在资产行落库之后撤掉预占。
 //
-// 只调整差额而不是重写用量：AssetRepo.Create 也会往这个列上加字节，
-// 两条路径同时写一个绝对值会互相覆盖，而各自加减增量则可以并存。
+// **它不记实际字节，只撤预占。** 实际字节由 AssetRepo.Create 在写 assets 行的
+// 同一个事务里记进这个列，Commit 再按"实际 − 预占"补一次差额的话，一次转存的
+// 净效果就是 预占 + 实际 + (实际 − 预占) = 2 × 实际——这正是 DEM-98 里
+// 全库比值精确等于 2.000 的来源。
+//
+// 归属点选在 AssetRepo 而不是这里，理由是这个列的**定义**就是"未软删资产的
+// 字节之和"（Recompute 正是照这个定义把它重写回去），因此只有改变那个和的
+// 代码才有资格永久改它。预占代表的是**还没有 assets 行的字节**（见 Recompute
+// 的注释），行一旦落库，这些字节就已经由行本身代表，预占必须同时让位，
+// 否则同一份字节被表示了两次。
+//
+// 与 Release 保持两个方法而不合并：撤预占的算术相同，但调用点的意图不同
+// （Commit 之后有一件已落库的资产，Release 之后没有），合并会让"成功结算"与
+// "失败回滚"在日志和断言里再也分不开。
 //
 // **实际超出预占时不再检查配额**：字节已经落盘了，这时报 quota_exceeded
-// 只会让一个本已成功的转存变成失败，产物白拿。超出的部分记进用量，
+// 只会让一个本已成功的转存变成失败，产物白拿。超出的部分由 Create 记进用量，
 // 下一次 Reserve 自然会被挡住——那才是应该拒绝的时刻。
-func (g *quotaGuard) Commit(ctx context.Context, userID string, reserved, actual int64) error {
+func (g *quotaGuard) Commit(ctx context.Context, userID string, reserved int64) error {
 	if err := requireID("user id", userID); err != nil {
 		return err
 	}
-	if reserved < 0 || actual < 0 {
+	if reserved < 0 {
 		return invalidParam("commit bytes must not be negative")
 	}
-
-	delta := actual - reserved
-	if delta == 0 {
+	if reserved == 0 {
 		return nil
 	}
-	// GREATEST(0, ...) 兜住负向调整把缓存压成负数的情况，与 AssetRepo.Delete 同理。
-	res, err := g.db.ExecContext(ctx,
-		`UPDATE users SET storage_used_bytes = GREATEST(0, storage_used_bytes + ?) WHERE id = ?`,
-		delta, userID)
-	if err != nil {
+	// GREATEST(0, ...) 兜住历史漂移，与 Release 同理：撤预占不该把缓存压成负数，
+	// 负用量会让配额检查永远通过。
+	//
+	// 不再断言"影响行数非零"：钳到 0 时新值可能与旧值相同，MySQL 会报 0 行受
+	// 影响，据此判"用户不存在"会误报。用户是否存在由 Reserve 的 FOR UPDATE 查过。
+	if _, err := g.db.ExecContext(ctx,
+		`UPDATE users SET storage_used_bytes = GREATEST(0, storage_used_bytes - ?) WHERE id = ?`,
+		reserved, userID); err != nil {
 		return wrap("commit storage", err)
-	}
-	n, err := affected(res, "commit storage")
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		// 调整量非零却 0 行受影响，只可能是用户不存在。
-		return notFound("user", userID)
 	}
 	return nil
 }

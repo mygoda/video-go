@@ -30,7 +30,8 @@ const defaultTransferTimeout = 10 * time.Minute
 // 上游多数是 chunked 传输，Content-Length 拿不到，因此预占只能估。
 // 估小了会让超配额的用户多写进去一点，估大了会把接近配额的用户挡在门外。
 // 取 32MB：一张高清图远小于它，一段 5s 视频大致在这个量级。
-// 真实值在 Commit 时多退少补。
+// 估得准不准只影响这段占位窗口：预占在落库后原样撤掉，真实字节由落库那一步
+// 自己记账，因此估值不会残留进用量。
 const estimatedArtifactBytes int64 = 32 << 20
 
 // TransferorDeps 是 Transferor 的依赖。
@@ -206,8 +207,9 @@ func (t *transferor) Transfer(ctx context.Context, userID, taskID string, ref ad
 	}
 
 	if t.quota != nil {
-		if err := t.quota.Commit(ctx, userID, reserved, info.Bytes); err != nil {
+		if err := t.quota.Commit(ctx, userID, reserved); err != nil {
 			// 配额是缓存，Recompute 能修回来；已经安全落地的产物不该为它作废。
+			// 这里撤的只是预占，实际字节已经由上面的 Create 记进用量了。
 			t.log.Error("配额结算失败", "user_id", userID, "asset_id", saved.ID, "err", err)
 		}
 	}
@@ -223,6 +225,11 @@ func (t *transferor) Transfer(ctx context.Context, userID, taskID string, ref ad
 //
 // 重复调用返回同一件资产：一次任务的多个输入槽可能引用同一个 upload，
 // 提升必须幂等，否则同一份素材会被复制成两条 asset，血缘也会跟着分叉。
+//
+// **本方法不碰 QuotaGuard**，字节只由 AssetRepo.Create 记一次，账是对的。
+// 但它同时意味着上传路径完全没有配额闸：配额满的用户仍能靠提升素材写进新
+// 字节。补闸会让"提交带素材的任务"在配额满时失败，是要单独确认的行为变更，
+// 不在这里顺手加。
 func (t *transferor) Promote(ctx context.Context, uploadID string) (domain.Asset, error) {
 	if t.uploads == nil {
 		return domain.Asset{}, fmt.Errorf("asset: 未配置 UploadRepo，无法提升 upload")

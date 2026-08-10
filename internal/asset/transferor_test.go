@@ -71,7 +71,7 @@ func (q *countingQuota) Reserve(context.Context, string, int64) error {
 	return nil
 }
 
-func (q *countingQuota) Commit(context.Context, string, int64, int64) error {
+func (q *countingQuota) Commit(context.Context, string, int64) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.committed++
