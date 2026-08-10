@@ -9,6 +9,7 @@ import (
 
 	"github.com/aigc-pool/aigc-pool/internal/adapter"
 	"github.com/aigc-pool/aigc-pool/internal/asset"
+	"github.com/aigc-pool/aigc-pool/internal/billing"
 	"github.com/aigc-pool/aigc-pool/internal/domain"
 	"github.com/aigc-pool/aigc-pool/internal/stream"
 )
@@ -377,10 +378,16 @@ func (s *Service) finish(ctx context.Context, task domain.Task, refs []adapter.A
 	}
 	if s.deps.Ledger != nil {
 		if _, err := s.deps.Ledger.Charge(context.WithoutCancel(ctx), task.UserID, task.ID, actual); err != nil {
-			// 结算失败不回滚 succeeded：产物已经交付给用户了，把一次成功的
-			// 生成改判失败会让他白白丢掉产物。少收一笔的账由流水对账修复，
-			// 那是可查可补的；已交付的产物被撤销是不可逆的。
-			s.log.Error("结算积分失败，需人工对账", "task_id", task.ID, "user_id", task.UserID, "amount", actual, "err", err)
+			if errors.Is(err, billing.ErrAlreadySettled) {
+				// 这笔冻结已经被另一条路径结清（重复的成功回调、或先一步的取消退款）。
+				// 冻结额度在那一次就释放了，账面是平的，没有可对的账。
+				s.log.Info("结算已由另一条路径完成，跳过", "task_id", task.ID, "user_id", task.UserID)
+			} else {
+				// 结算失败不回滚 succeeded：产物已经交付给用户了，把一次成功的
+				// 生成改判失败会让他白白丢掉产物。少收一笔的账由流水对账修复，
+				// 那是可查可补的；已交付的产物被撤销是不可逆的。
+				s.log.Error("结算积分失败，需人工对账", "task_id", task.ID, "user_id", task.UserID, "amount", actual, "err", err)
+			}
 		}
 	}
 
@@ -579,6 +586,13 @@ func (s *Service) refund(ctx context.Context, task domain.Task, reason string) {
 		return
 	}
 	if _, err := s.deps.Ledger.Refund(context.WithoutCancel(ctx), task.UserID, task.ID, reason); err != nil {
+		if errors.Is(err, billing.ErrAlreadySettled) {
+			// 另一条路径（HTTP 取消接口、或重复的失败回调）已经退过了。
+			// 幂等闸挡住第二笔正是它存在的意义，冻结额度在第一笔里就释放了，
+			// 账是平的——记成"需人工对账"会让人去查一笔不存在的欠账。
+			s.log.Info("退款已由另一条路径完成，跳过", "task_id", task.ID, "user_id", task.UserID)
+			return
+		}
 		s.log.Error("退还冻结积分失败，需人工对账",
 			"task_id", task.ID, "user_id", task.UserID, "amount", task.EstimatedCost, "err", err)
 	}
