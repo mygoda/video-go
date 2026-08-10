@@ -5,6 +5,12 @@ export interface Size {
   h: number;
 }
 
+/** 某个坐标系里的矩形，左上角 + 尺寸 */
+export interface Rect extends Size {
+  left: number;
+  top: number;
+}
+
 /**
  * 节点的边框盒尺寸，节点自身或窗口变化时重测。
  *
@@ -29,4 +35,40 @@ export function useElementSize(node: HTMLElement | null): Size {
   }, [node]);
 
   return size;
+}
+
+/**
+ * 节点在 container 坐标系里的矩形，任一方尺寸变化时重测。
+ *
+ * 比 useElementSize 多一份位置，两个节点都要盯着：常驻浮层（对话坞、缩放条）
+ * 贴着视口的边角摆，视口一改尺寸它们的位置就变，自身尺寸却一动不动——只观察
+ * 浮层自己的话，窗口缩放后拿到的还是旧位置。
+ *
+ * 节点没挂上时返回 null 而不是一个零矩形：零矩形会被当成一块真挡路的东西
+ * 参与避让计算，让工具条为一块不存在的浮层挪窝。
+ */
+export function useElementRect(node: HTMLElement | null, container: HTMLElement | null): Rect | null {
+  const [rect, setRect] = useState<Rect | null>(null);
+
+  useLayoutEffect(() => {
+    if (!node || !container) {
+      setRect(null);
+      return;
+    }
+    const measure = (): void => {
+      const at = node.getBoundingClientRect();
+      const base = container.getBoundingClientRect();
+      const next: Rect = { left: at.left - base.left, top: at.top - base.top, w: at.width, h: at.height };
+      setRect((prev) =>
+        prev && prev.left === next.left && prev.top === next.top && prev.w === next.w && prev.h === next.h ? prev : next,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [node, container]);
+
+  return rect;
 }

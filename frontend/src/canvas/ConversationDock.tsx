@@ -19,6 +19,12 @@ interface ConversationDockProps {
    */
   collapsed: boolean;
   onCollapsedChange(next: boolean): void;
+  /**
+   * 交出坞的根节点。坞是不透明的常驻浮层，卡片工具条落到它底下就一个按钮都
+   * 点不到，画布页得量出这块矩形才能让工具条绕开——尺寸由外面量，理由同
+   * useElementSize：坞是条件渲染的，收 ref 对象拿到的会是 null。
+   */
+  rootRef(node: HTMLElement | null): void;
   onRemoveRef(cardId: string): void;
 }
 
@@ -29,6 +35,7 @@ export function ConversationDock({
   refCards,
   collapsed,
   onCollapsedChange,
+  rootRef,
   onRemoveRef,
 }: ConversationDockProps) {
   const [text, setText] = useState('');
@@ -86,7 +93,7 @@ export function ConversationDock({
   }
 
   return (
-    <aside className="dock">
+    <aside className="dock" ref={rootRef}>
       <div className="dock-head">
         💬 对话
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>

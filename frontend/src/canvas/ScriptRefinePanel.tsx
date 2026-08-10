@@ -2,8 +2,8 @@ import { useState } from 'react';
 import type { CanvasCard } from '@/api/types';
 import { cardTitle } from './cardTitle';
 import { TextModelChip } from './TextModelChip';
-import { refinePanelPosition, type Rect } from './toolbar';
-import { useElementSize, type Size } from './useElementSize';
+import { refinePanelPosition } from './toolbar';
+import { useElementSize, type Rect, type Size } from './useElementSize';
 
 interface ScriptRefinePanelProps {
   card: CanvasCard;

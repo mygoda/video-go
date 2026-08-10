@@ -11,7 +11,7 @@ import { estimateCost } from '@/schema/pricing';
 import type { ModelCapabilitySchema } from '@/schema/types';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
-import { useElementSize } from '@/canvas/useElementSize';
+import { useElementRect, useElementSize, type Rect } from '@/canvas/useElementSize';
 import { useViewport } from '@/canvas/useViewport';
 import { useCanvasSync } from '@/canvas/useCanvasSync';
 import { CanvasCardView } from '@/canvas/CanvasCardView';
@@ -91,6 +91,17 @@ export function CanvasPage() {
   const [toolbarEl, setToolbarEl] = useState<HTMLDivElement | null>(null);
   const viewportSize = useElementSize(viewportEl);
   const toolbarSize = useElementSize(toolbarEl);
+  // 视口里常驻着两块不透明浮层：右下角的对话坞（z 300）和左下角的缩放条
+  // （与工具条同层但排在它后面，照样盖得住）。工具条得知道它们在哪才躲得开，
+  // 所以量的是矩形不是尺寸——两块都随视口尺寸挪位置。
+  const [dockEl, setDockEl] = useState<HTMLElement | null>(null);
+  const [controlsEl, setControlsEl] = useState<HTMLDivElement | null>(null);
+  const dockRect = useElementRect(dockEl, viewportEl);
+  const controlsRect = useElementRect(controlsEl, viewportEl);
+  const overlayRects = useMemo(
+    () => [dockRect, controlsRect].filter((r): r is Rect => r !== null),
+    [dockRect, controlsRect],
+  );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rerunOpen, setRerunOpen] = useState(false);
@@ -643,7 +654,7 @@ export function CanvasPage() {
   }
 
   const toolbar = selected
-    ? toolbarPosition(selected, viewport, toolbarSize, viewportSize)
+    ? toolbarPosition(selected, viewport, toolbarSize, viewportSize, overlayRects)
     : { left: 0, top: 0 };
 
   return (
@@ -859,7 +870,7 @@ export function CanvasPage() {
             </div>
           )}
 
-          <div className="viewport-controls">
+          <div ref={setControlsEl} className="viewport-controls">
             <button type="button" className="vc-btn" aria-label="缩小" onClick={() => zoomBy(1 / 1.2)}>
               ⊖
             </button>
@@ -930,6 +941,7 @@ export function CanvasPage() {
               refCards={refCards}
               collapsed={dockCollapsed}
               onCollapsedChange={setDockCollapsed}
+              rootRef={setDockEl}
               onRemoveRef={(id) => setDroppedRefs((prev) => [...prev, id])}
             />
           )}
