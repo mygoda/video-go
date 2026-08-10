@@ -495,7 +495,11 @@ a { color: inherit; text-decoration: none; }
   background: rgba(27,27,34,.92); backdrop-filter: blur(16px);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-xl); box-shadow: var(--shadow-modal);
-  z-index: var(--z-dock); overflow: hidden;
+  /* 不裁剪：芯片行的弹层要从坞里往上探出去。坞只有一二百像素高，裁掉就等于
+     模型下拉只剩两行。原来的 overflow:hidden 顺带在替消息列表兜底，那件事
+     由 .dock-body 自己的 min-height:0 接管（flex 子项默认 min-height:auto，
+     不写这一行列表会把坞顶开、越过 max-height）。 */
+  z-index: var(--z-dock);
 }
 /* 坞是浮在画布上的面板，不是盖在画布上的盖子。
    整块矩形都吃指针的话，压在它底下的卡片连选都选不中；而坞是不透明的，
@@ -514,7 +518,7 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--border-subtle);
   font-size: var(--text-xs); color: var(--text-secondary);
 }
-.dock-body { flex: 1; overflow-y: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
+.dock-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
 .msg { display: flex; gap: var(--space-2); font-size: var(--text-xs); line-height: var(--leading-normal); }
 .msg .who {
   width: 20px; height: 20px; border-radius: var(--radius-full); flex: none;
@@ -532,6 +536,9 @@ a { color: inherit; text-decoration: none; }
   border: 1px solid var(--accent-border);
   font-size: var(--text-2xs); color: var(--text-primary);
 }
+/* 技能与模型两颗芯片单独一行：坞只有 360px，把它们塞回输入框那一行，
+   输入框就只剩一百来像素，一句想法都写不下 */
+.dock-chips { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
 .dock-input {
   display: flex; align-items: center; gap: var(--space-2);
   height: var(--h-input); padding: 0 var(--space-2) 0 var(--space-3);

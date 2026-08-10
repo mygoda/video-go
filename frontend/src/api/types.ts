@@ -206,8 +206,8 @@ export interface CanvasCard {
   params?: Record<string, JsonValue>;
   /** 血缘：这张卡由哪些卡片作为输入生成。不画连线，只在选中时高亮 */
   refs: string[];
-  /** 后端可能整个字段不返回，读之前必须判空 */
-  history?: { asset_id: string; prompt: string; at: number }[];
+  /** 后端可能整个字段不返回，读之前必须判空。at 是 RFC3339 字符串，不是 unix 毫秒 */
+  history?: { asset_id: string; prompt: string; at: string }[];
   auto_placed: boolean;
   /** RFC3339 字符串。后端是 time.Time，发数字会被 Time.UnmarshalJSON 顶回 400 */
   created_at: string;
@@ -255,6 +255,14 @@ export interface CanvasStoryboardResponse {
   /** 拆镜头只落文字，恒定是空数组。字段保留着，是为了让「这一步不派任务」是个能读到的事实 */
   task_ids: string[];
   cards: CanvasCard[];
+}
+
+export interface CanvasRefineResponse {
+  reply_message_id: string;
+  revision: number;
+  /** 改写后的卡片快照。**不带 params** —— 版本列表是服务端在这次改写里追加的，
+   *  回一个改写前读到的 params 等于回一份过期的版本历史。要看新版本必须重拉画布。 */
+  card: CanvasCard;
 }
 
 export interface StreamEvent {

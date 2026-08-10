@@ -6,6 +6,7 @@ import type {
   CanvasChatResponse,
   CanvasOp,
   CanvasProject,
+  CanvasRefineResponse,
   CanvasState,
   CanvasStoryboardResponse,
   CircuitBreakerState,
@@ -48,7 +49,10 @@ export const api = {
   changePassword: (old_password: string, new_password: string) =>
     request<void>('/me/password', { method: 'POST', body: { old_password, new_password } }),
 
-  models: (modality: 'image' | 'video') =>
+  // text 档是写剧本用的 chat 模型目录。它与 image / video 两档共用一个端点，
+  // 但只有画布的剧本这一步会拉它 —— 生成器的模型下拉传的仍是各自的 modality，
+  // 多出来的这一档不会漏进那两个页面。
+  models: (modality: 'image' | 'video' | 'text') =>
     request<{ models: ModelCapabilitySchema[] }>(`/models?modality=${modality}`).then((r) => r.models),
 
   skills: () => request<{ skills: Skill[] }>('/skills').then((r) => r.skills),
@@ -119,10 +123,27 @@ export const api = {
       body: { base_revision, ops },
     }),
 
-  canvasChat: (projectId: string, message: string, ref_card_ids: string[], skill_id: string | null) =>
+  // model_id 是用户这次点名用哪个模型写剧本。null 表示没点名，此时整个键
+  // 不进 JSON（undefined 会被 JSON.stringify 丢掉），后端按它自己的默认规则选 ——
+  // 前端替它"默认选第一个再传上去"就是偷偷改了默认模型。
+  canvasChat: (
+    projectId: string,
+    message: string,
+    ref_card_ids: string[],
+    skill_id: string | null,
+    model_id: string | null,
+  ) =>
     request<CanvasChatResponse>(`/canvas/${projectId}/chat`, {
       method: 'POST',
-      body: { message, ref_card_ids, skill_id },
+      body: { message, ref_card_ids, skill_id, model_id: model_id ?? undefined },
+    }),
+
+  // 按一句指令定向改写一张剧本卡。改动前的正文由服务端追加进 params.versions，
+  // 所以调用方拿到 200 之后必须重新拉一次画布才看得到新版本（响应里的 card 不带 params）。
+  refineScriptCard: (projectId: string, cardId: string, instruction: string, model_id: string | null) =>
+    request<CanvasRefineResponse>(`/canvas/${projectId}/cards/${cardId}/refine`, {
+      method: 'POST',
+      body: { instruction, model_id: model_id ?? undefined },
     }),
 
   // 拆分镜由用户在剧本卡上主动发起，剧本那一步不会自己走到这里。

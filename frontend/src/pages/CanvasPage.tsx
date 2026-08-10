@@ -20,6 +20,7 @@ import { CardRerunPanel } from '@/canvas/CardRerunPanel';
 import { ComposeBar } from '@/canvas/ComposeBar';
 import { FlowStatusBar } from '@/canvas/FlowStatusBar';
 import { ScriptVersionsPanel } from '@/canvas/ScriptVersionsPanel';
+import { ScriptRefinePanel } from '@/canvas/ScriptRefinePanel';
 import { activeScript, MAX_SHOTS } from '@/canvas/flow';
 import {
   firstFrameConcurrency,
@@ -90,6 +91,10 @@ export function CanvasPage() {
   // 时会以为两边都保存了，实际上只提交了后点的那张。
   const [editingId, setEditingId] = useState<string | null>(null);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  // 「优化」是一次同步的模型调用，6 秒起步。开着面板的那段时间要能看出它在跑，
+  // 也要挡住第二次提交——同一张卡连改两版，后一版会盖掉前一版的正文。
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [refining, setRefining] = useState(false);
   const [droppedRefs, setDroppedRefs] = useState<string[]>([]);
   // 合成模式：点选卡片不再是"选中"，而是往片段序列里追加。数组顺序即成片顺序，
   // 所以它是 string[] 而不是 Set——用户点选的先后是这个功能唯一的排序依据。
@@ -559,6 +564,36 @@ export function CanvasPage() {
     void patchScript(card, { text });
   }
 
+  /**
+   * 按一句指令让模型改写一张剧本卡。
+   *
+   * 发之前先把队列冲干净，理由同 runStoryboard：用户很可能刚在编辑器里改完
+   * 正文，那次 patch 还压在防抖里，后端读到的会是改之前的旧稿，改出来的东西
+   * 对不上他看见的字。
+   *
+   * 改完必须重拉画布：新版本是服务端在这次改写里追加进 params.versions 的，
+   * 响应里那张卡刻意不带 params（见 CanvasRefineResponse），就地替换会让
+   * 版本历史停在改写之前。
+   *
+   * 失败原样把后端的话透出来：这个接口会因为"点了个不能写剧本的模型"回 400，
+   * 吞成"优化失败"的话，用户既不知道是模型的事，也不知道该换哪个。
+   */
+  async function runRefine(card: CanvasCard, instruction: string, modelId: string | null): Promise<void> {
+    if (refining) return;
+    setRefining(true);
+    try {
+      await flush();
+      await api.refineScriptCard(projectId, card.id, instruction, modelId);
+      await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+      setRefineOpen(false);
+      toast('已按指令改好，改动前的那一版在版本历史里');
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : '优化失败，请稍后重试', 'danger');
+    } finally {
+      setRefining(false);
+    }
+  }
+
   /** 回退：把那一版的正文（和它当时的标题，如果有）写回当前，这次回退本身也会被服务端留成一版。 */
   function restoreScript(card: CanvasCard, version: ScriptVersion): void {
     if ((card.text ?? '') === version.text) return;
@@ -742,6 +777,21 @@ export function CanvasPage() {
                 <button
                   type="button"
                   className="icon-btn"
+                  title={
+                    (selected.text ?? '').trim() ? '按一句指令让模型改写这份剧本' : '先写点正文，才有东西可改'
+                  }
+                  aria-label="优化剧本"
+                  aria-pressed={refineOpen}
+                  disabled={!(selected.text ?? '').trim() || refining}
+                  onClick={() => setRefineOpen((on) => !on)}
+                >
+                  ✨
+                </button>
+              )}
+              {selected.kind === 'script' && (
+                <button
+                  type="button"
+                  className="icon-btn"
                   title="版本历史"
                   aria-label="版本历史"
                   aria-pressed={versionsOpen}
@@ -822,6 +872,15 @@ export function CanvasPage() {
               card={selected}
               onRestore={(version) => restoreScript(selected, version)}
               onClose={() => setVersionsOpen(false)}
+            />
+          )}
+
+          {refineOpen && selected?.kind === 'script' && (
+            <ScriptRefinePanel
+              card={selected}
+              busy={refining}
+              onSubmit={(instruction, modelId) => void runRefine(selected, instruction, modelId)}
+              onClose={() => setRefineOpen(false)}
             />
           )}
 

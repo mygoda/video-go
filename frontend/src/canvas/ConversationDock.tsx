@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasCard, CanvasMessage } from '@/api/types';
 import { cardTitle } from './cardTitle';
+import { TextModelChip } from './TextModelChip';
 import { api } from '@/api/endpoints';
+import { ApiError } from '@/api/client';
 import { qk, useSkills } from '@/api/queries';
 import { Popover } from '@/components/Popover';
 import { toast } from '@/stores/toast';
@@ -32,6 +34,9 @@ export function ConversationDock({
   const [text, setText] = useState('');
   const [skillId, setSkillId] = useState<string | null>(null);
   const [skillOpen, setSkillOpen] = useState(false);
+  // 这次写剧本点名哪个模型。null 一直是初始值，见 TextModelChip：
+  // 不点名时请求里不带 model_id，后端的默认行为一字不变。
+  const [modelId, setModelId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const { data: skills } = useSkills();
@@ -70,11 +75,11 @@ export function ConversationDock({
     if (!value || sending) return;
     setSending(true);
     try {
-      await api.canvasChat(projectId, value, refCards.map((c) => c.id), skillId);
+      await api.canvasChat(projectId, value, refCards.map((c) => c.id), skillId, modelId);
       setText('');
       await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
-    } catch {
-      toast('发送失败，请稍后重试', 'danger');
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : '发送失败，请稍后重试', 'danger');
     } finally {
       setSending(false);
     }
@@ -129,10 +134,14 @@ export function ConversationDock({
               </div>
             )}
 
-            <div className="dock-input">
+            {/* 技能与模型各占一颗芯片，单独一行：360px 的坞里再塞两颗进输入框，
+                输入框就只剩下一百来像素，写不下一句想法。
+                两颗都往上开 —— 这一行离屏幕底边只有几十像素，往下开的弹层看不见。 */}
+            <div className="dock-chips">
               <Popover
                 open={skillOpen}
                 onClose={() => setSkillOpen(false)}
+                dropUp
                 trigger={
                   <button
                     type="button"
@@ -181,6 +190,10 @@ export function ConversationDock({
                 </div>
               </Popover>
 
+              <TextModelChip modelId={modelId} onChange={setModelId} dropUp />
+            </div>
+
+            <div className="dock-input">
               <label className="sr-only" htmlFor="dock-input">
                 对话输入
               </label>

@@ -5,7 +5,7 @@ import { adminApi, api } from './endpoints';
 export const qk = {
   me: ['me'] as const,
   credits: ['credits'] as const,
-  models: (modality: 'image' | 'video') => ['models', modality] as const,
+  models: (modality: 'image' | 'video' | 'text') => ['models', modality] as const,
   skills: ['skills'] as const,
   tasks: ['tasks'] as const,
   assets: (type: string) => ['assets', type] as const,
@@ -26,7 +26,7 @@ export function useMe(enabled: boolean) {
   return useQuery({ queryKey: qk.me, queryFn: api.me, enabled, staleTime: 30_000 });
 }
 
-export function useModels(modality: 'image' | 'video') {
+export function useModels(modality: 'image' | 'video' | 'text') {
   return useQuery({
     queryKey: qk.models(modality),
     queryFn: () => api.models(modality),

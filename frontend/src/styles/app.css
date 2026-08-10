@@ -97,6 +97,7 @@
 .popover-anchor { position: relative; display: inline-flex; }
 .popover-float { position: absolute; top: calc(100% + 6px); left: 0; }
 .popover-float.align-right { left: auto; right: 0; }
+.popover-float.drop-up { top: auto; bottom: calc(100% + 6px); }
 .popover-scroll { max-height: 320px; overflow-y: auto; }
 
 /* 分段按钮：select 的 render_hint='segmented' 展开态 */
