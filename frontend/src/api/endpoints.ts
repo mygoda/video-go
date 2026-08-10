@@ -52,8 +52,13 @@ export const api = {
 
   skills: () => request<{ skills: Skill[] }>('/skills').then((r) => r.skills),
 
-  upload: (dataUrl: string, name: string) =>
-    request<UploadResponse>('/uploads', { method: 'POST', body: { data_url: dataUrl, name } }),
+  // 直传字节，不走 base64 data URL：后端按真实字节嗅探 MIME，
+  // 且 base64 会把传输量放大 33%，视频素材上还得先在内存里拼出整个字符串。
+  upload: (file: File) => {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return request<UploadResponse>('/uploads', { method: 'POST', body: form });
+  },
 
   tasks: () => request<Paged<Task>>('/tasks').then((r) => r.items),
 

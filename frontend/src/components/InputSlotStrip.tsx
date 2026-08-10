@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import type { InputSlotSpec } from '@/schema/types';
 import type { InputValues, UploadedFile } from '@/schema/evaluate';
 import { validateFile } from '@/schema/validate';
+import { ApiError } from '@/api/client';
 import { api } from '@/api/endpoints';
 
 interface InputSlotStripProps {
@@ -12,13 +13,10 @@ interface InputSlotStripProps {
   onRemove(slot: string, uploadId: string): void;
 }
 
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('读取文件失败'));
-    reader.readAsDataURL(file);
-  });
+/** 「不支持的文件类型: text/plain」这种具体理由在 field_errors 里，message 只有一句「参数校验未通过」 */
+function apiErrorText(err: ApiError): string {
+  const detail = (err.body.field_errors ?? []).map((f) => f.message).join('；');
+  return detail || err.message;
 }
 
 function Slot({
@@ -52,12 +50,14 @@ function Slot({
           setLocalError(`${file.name}：${problem}`);
           continue;
         }
-        const res = await api.upload(await readAsDataUrl(file), file.name);
+        const res = await api.upload(file);
         uploaded.push({ upload_id: res.upload_id, preview_url: res.preview_url, name: file.name });
       }
       if (uploaded.length) onAdd(uploaded);
-    } catch {
-      setLocalError('上传失败，请重试');
+    } catch (err) {
+      // 后端的拒绝理由（文件类型不支持、超额度……）必须原样上屏：
+      // 一句笼统的「请重试」会把用户推去做一件永远不会成功的事。
+      setLocalError(err instanceof ApiError ? apiErrorText(err) : '上传失败，请重试');
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';
