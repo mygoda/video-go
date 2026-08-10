@@ -53,7 +53,15 @@
 .proj .name { font-size: var(--text-md); font-weight: var(--weight-medium); margin-bottom: 3px; }
 .proj-new {
   border: 1px dashed var(--border-strong); background: transparent;
-  display: grid; place-items: center; gap: 6px; min-height: 214px;
+  /* place-items 只管行内对齐。＋ 和文字是两个隐式行，align-content 缺省是 stretch，
+     两行会各自吃掉半张卡片的高度，gap 写了等于没写 */
+  display: grid; place-items: center; align-content: center; gap: 6px;
+  /* 只作空列表时的兜底高度：有项目时靠网格 stretch 与同行卡片等高。
+     原来的 214px 比真实卡片高，会把整行拉长、在卡片底部留一截死空间 */
+  min-height: 180px;
+  /* 唯一继承这个字号的是裸文本 ＋（「新建项目」自带 --text-sm），
+     13px 的加号放在 296×204 的卡片里读不出来 */
+  font-size: var(--text-2xl);
   color: var(--text-tertiary); border-radius: var(--radius-lg);
 }
 .proj-new:hover { border-color: var(--accent-border); color: var(--text-secondary); }
