@@ -216,6 +216,48 @@ async function runTask(task: Task, model: ModelCapabilitySchema, cardId?: string
   }
 }
 
+/* ──────────────────────────────── 上传 ──────────────────────────────── */
+
+/** 与真后端 handlers_uploads.go 的 allowedUploadMIME 保持一致 */
+const ALLOWED_UPLOAD_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'video/mp4'];
+
+/**
+ * 按魔数判定类型，和真后端一样不信 File.type —— 浏览器那个值是照扩展名猜的，
+ * 一个 .txt 改名成 .png 在真后端会被挡下，mock 就也必须挡下。
+ * mock 与真后端行为不一致，正是这条上传链路能坏一整个版本没人发现的原因。
+ */
+async function sniffUploadMIME(file: File): Promise<string> {
+  const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  const magic = (offset: number, ...bytes: number[]) =>
+    bytes.every((b, i) => head[offset + i] === b);
+  const ascii = (offset: number, len: number) =>
+    String.fromCharCode(...head.slice(offset, offset + len));
+
+  if (magic(0, 0x89, 0x50, 0x4e, 0x47)) return 'image/png';
+  if (magic(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (magic(0, 0x47, 0x49, 0x46, 0x38)) return 'image/gif';
+  if (ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') return 'image/webp';
+  if (ascii(4, 4) === 'ftyp') return 'video/mp4';
+  // Go 的 http.DetectContentType 在没有二进制特征、也没有控制字符时判 text/plain，
+  // 这里照抄那条判据，好让「.txt 改名成 .png」在两边收到的是同一句话
+  const binary = head.some((b) => b <= 0x08 || b === 0x0b || (b >= 0x0e && b <= 0x1a) || (b >= 0x1c && b <= 0x1f));
+  return binary ? 'application/octet-stream' : 'text/plain';
+}
+
+/**
+ * preview_url 用自包含的 data URL，不用 URL.createObjectURL：
+ * mock db 会被 save() 落进 localStorage，而 blob: URL 只在当前 document 内有效，
+ * 刷新之后就是死链；何况也没有任何一处能负责 revoke，每传一个就漏一块内存。
+ */
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
 /* ──────────────────────────────── 路由 ──────────────────────────────── */
 
 export async function mockHandle(
@@ -308,12 +350,24 @@ export async function mockHandle(
   }
 
   if (path === '/uploads' && method === 'POST') {
+    // 真后端收的是 multipart（handlers_uploads.go 的 r.FormFile("file")），mock 必须收一模一样的东西。
+    // 这里曾经读 body.data_url，于是 mock 一路绿灯、真后端 100% 400，把这条链路的断裂藏了一整个版本。
+    const file = body instanceof FormData ? body.get('file') : null;
+    if (!(file instanceof File)) {
+      return fail(400, 'invalid_param', '参数校验未通过', {
+        field_errors: [{ key: 'file', message: '缺少文件' }],
+      });
+    }
+    const mime = await sniffUploadMIME(file);
+    if (!ALLOWED_UPLOAD_MIME.includes(mime)) {
+      return fail(400, 'invalid_param', '参数校验未通过', {
+        field_errors: [{ key: 'file', message: `不支持的文件类型: ${mime}` }],
+      });
+    }
     const id = uid('up');
-    const dataUrl = typeof body?.data_url === 'string' ? body.data_url : artUrl(id, 256, 256);
     db.uploads[id] = {
-      preview_url: dataUrl,
-      // data URL 的 base64 段长度 ×3/4 约等于原始字节数，够存储页有数可看
-      bytes: Math.round((dataUrl.length * 3) / 4),
+      preview_url: await readAsDataUrl(file),
+      bytes: file.size,
       created_at: new Date().toISOString(),
     };
     save();

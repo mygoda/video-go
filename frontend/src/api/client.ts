@@ -48,6 +48,7 @@ function handleUnauthorized(): void {
 
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  /** 传 FormData 走 multipart 直传字节，其余一律按 JSON 序列化 */
   body?: unknown;
   signal?: AbortSignal;
 }
@@ -68,12 +69,16 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   const headers: Record<string, string> = { Accept: 'application/json' };
   const auth = getToken();
   if (auth) headers.Authorization = `Bearer ${auth}`;
-  if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+  // FormData 的 Content-Type 只能由浏览器写。boundary 是 fetch 序列化 body 时才生成的
+  // 随机串，手写一个 `multipart/form-data` 头等于交出一个没有 boundary 的类型，
+  // 后端的 ParseMultipartForm 会当场解析失败。所以这里是「刻意不设」，不是漏了。
+  const isForm = opts.body instanceof FormData;
+  if (opts.body !== undefined && !isForm) headers['Content-Type'] = 'application/json';
 
   const res = await fetch(API_BASE + path, {
     method,
     headers,
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    body: opts.body === undefined ? undefined : isForm ? (opts.body as FormData) : JSON.stringify(opts.body),
     signal: opts.signal,
   });
 
