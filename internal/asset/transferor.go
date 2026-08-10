@@ -268,10 +268,13 @@ func fillImageSize(ctx context.Context, blobs Store, log *slog.Logger, a *domain
 // 重复调用返回同一件资产：一次任务的多个输入槽可能引用同一个 upload，
 // 提升必须幂等，否则同一份素材会被复制成两条 asset，血缘也会跟着分叉。
 //
-// **本方法不碰 QuotaGuard**，字节只由 AssetRepo.Create 记一次，账是对的。
-// 但它同时意味着上传路径完全没有配额闸：配额满的用户仍能靠提升素材写进新
-// 字节。补闸会让"提交带素材的任务"在配额满时失败，是要单独确认的行为变更，
-// 不在这里顺手加。
+// **这里是上传路径的配额闸**。闸放在提升而不是 POST /api/uploads：
+// storage_used_bytes 的定义是"未软删资产的字节之和"（Recompute 正是照这个
+// 定义把它重写回去），而 upload 是 24h 后回收的临时对象、没有 assets 行，
+// 把它的字节占进那个列会在下一次 Recompute 时被抹掉，闸就成了摆设。
+// 提升是这条路径上唯一产生 assets 行的地方，也是唯一的收口——任务提交、
+// 画布、重跑都经由 executor 的 resolveOne 走到这里，闸放在更外层就得在每个
+// 入口重复一遍，漏一个就是一个绕过口。
 func (t *transferor) Promote(ctx context.Context, uploadID string) (domain.Asset, error) {
 	if t.uploads == nil {
 		return domain.Asset{}, fmt.Errorf("asset: 未配置 UploadRepo，无法提升 upload")
@@ -284,8 +287,23 @@ func (t *transferor) Promote(ctx context.Context, uploadID string) (domain.Asset
 		return t.assets.Get(ctx, *up.AssetID)
 	}
 
+	// 预占必须在幂等分支**之后**：重复提升返回的是同一件已落库的资产，它的字节
+	// 早已由那次 Create 记进用量，再占一次会让引用同一素材的多个输入槽被重复
+	// 计费，然后在配额边缘上误拒一个本该通过的任务。
+	//
+	// 占的是 upload 自报的字节而不是 Transfer 那样的估值：对象已经在本平台
+	// 存储里，大小是确定的，副本与它等大。预占同样在落库后由 Commit 原样撤掉，
+	// 实际字节归 AssetRepo.Create——分工与 Transfer 一致。
+	reserved := up.Bytes
+	if t.quota != nil {
+		if err := t.quota.Reserve(ctx, up.UserID, reserved); err != nil {
+			return domain.Asset{}, err
+		}
+	}
+
 	src, _, err := t.blobs.Get(ctx, up.StorageKey)
 	if err != nil {
+		t.release(ctx, up.UserID, reserved)
 		return domain.Asset{}, fmt.Errorf("asset: 读取 upload %s 的对象: %w", uploadID, err)
 	}
 	defer func() { _ = src.Close() }()
@@ -297,6 +315,7 @@ func (t *transferor) Promote(ctx context.Context, uploadID string) (domain.Asset
 
 	info, err := t.blobs.Put(ctx, key, src, mime)
 	if err != nil {
+		t.release(ctx, up.UserID, reserved)
 		return domain.Asset{}, fmt.Errorf("asset: 提升 upload %s: %w", uploadID, err)
 	}
 
@@ -316,7 +335,15 @@ func (t *transferor) Promote(ctx context.Context, uploadID string) (domain.Asset
 		if delErr := t.blobs.Delete(context.WithoutCancel(ctx), info.Key); delErr != nil {
 			t.log.Error("提升回滚失败，留下无主对象", "key", info.Key, "err", delErr)
 		}
+		t.release(ctx, up.UserID, reserved)
 		return domain.Asset{}, fmt.Errorf("asset: 落库 upload %s 的提升结果: %w", uploadID, err)
+	}
+	if t.quota != nil {
+		if err := t.quota.Commit(ctx, up.UserID, reserved); err != nil {
+			// 与 Transfer 同理：撤的只是预占，实际字节已由 Create 记进用量，
+			// 结算失败不该作废一件已经安全落地的资产，漂移由 Recompute 修。
+			t.log.Error("配额结算失败", "user_id", up.UserID, "asset_id", saved.ID, "err", err)
+		}
 	}
 	if err := t.uploads.MarkPromoted(ctx, uploadID, saved.ID); err != nil {
 		// 标记失败只会让回收扫描在 24h 后误判这份 upload 可删，
