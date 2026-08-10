@@ -328,33 +328,18 @@ func (failingCreateAssets) Create(context.Context, domain.Asset) (domain.Asset, 
 
 // TestPromoteChargesStorageExactlyOnce 覆盖第二条写 assets 的路径。
 //
-// Promote 全程不碰 QuotaGuard（既不预占也不结算），字节只由 AssetRepo.Create
-// 记一次，因此它的账本来就是对的——这也解释了为什么全库对账里混了上传的
-// 用户比值落在 1 与 2 之间，而不是整齐的 2.000。
-//
-// 用例同时钉住"提升不做配额检查"这个**现状**：配额被设成远小于素材大小，
-// 提升仍然成功。那是一个独立于本票的缺口（上传路径完全没有配额闸），
-// 补闸会让提交带素材的任务在配额满时失败，属于要单独确认的行为变更。
-// 真去补的时候，这里应当连同断言一起改。
+// Promote 的预占（DEM-102 的配额闸）在落库后由 Commit 原样撤掉，实际字节只由
+// AssetRepo.Create 记一次，因此净效果仍是 1×——本用例守的就是加闸没有把这条
+// 账改成 2×。配额给得足够大，这里断言的是记账而不是闸。
 func TestPromoteChargesStorageExactlyOnce(t *testing.T) {
 	db := requireDB(t)
 	ctx := context.Background()
 	const size = 65536
-	f := newFixture(t, 0, size/2) // 配额刻意小于素材
+	f := newFixture(t, 0, 1<<30)
 	assets := NewAssetRepo(db)
 	h := newTransferHarness(t, db, assets)
 
-	key := "uploads/" + uid.Token(8) + ".png"
-	_, err := h.blobs.Put(ctx, key, bytes.NewReader(bytes.Repeat([]byte{'u'}, size)), "image/png")
-	requireNoErr(t, err, "put upload object")
-
-	up, err := h.uploads.Create(ctx, domain.Upload{
-		UserID:     f.userID,
-		StorageKey: key,
-		MIME:       "image/png",
-		Bytes:      size,
-	})
-	requireNoErr(t, err, "create upload")
+	up := h.newUpload(t, f.userID, size)
 
 	a, err := h.tr.Promote(ctx, up.ID)
 	requireNoErr(t, err, "promote")
@@ -380,5 +365,207 @@ func TestPromoteChargesStorageExactlyOnce(t *testing.T) {
 	if cached != sum {
 		t.Fatalf("提升把用量记了 %.3f 遍：缓存 %d，逐条求和 %d",
 			float64(cached)/float64(sum), cached, sum)
+	}
+}
+
+// ── DEM-102：上传路径的配额闸 ──────────────────────────────────────────
+
+// newUpload 造一个已落对象的临时上传，返回它的 upload 行。
+func (h *transferHarness) newUpload(t *testing.T, userID string, size int) domain.Upload {
+	t.Helper()
+	ctx := context.Background()
+	key := "uploads/" + uid.Token(8) + ".png"
+	info, err := h.blobs.Put(ctx, key, bytes.NewReader(bytes.Repeat([]byte{'u'}, size)), "image/png")
+	requireNoErr(t, err, "put upload object")
+
+	up, err := h.uploads.Create(ctx, domain.Upload{
+		UserID:     userID,
+		StorageKey: key,
+		MIME:       "image/png",
+		Bytes:      info.Bytes,
+	})
+	requireNoErr(t, err, "create upload")
+	return up
+}
+
+// TestPromoteQuotaGateRejectsBeforeAnyByteLands 是 DEM-102 的主用例：
+// 配额已满的用户不能再靠提升素材写进字节，而且被拒时不留垃圾。
+//
+// 断言不止"报了 quota_exceeded"：一个"先复制再检查"的实现同样能返回这个错误，
+// 却已经把副本写进了存储。因此这里数存储里的对象——提升前有 1 个（upload 自己），
+// 被拒后必须还是 1 个，多出来的那个就是白占的磁盘。
+//
+// 用一件垫底资产把配额吃到只剩 2000 字节，而不是从 0 开始配一个极小的配额：
+// 前者是线上真实的"用满了"，且能顺带证明被拒之后预占没有漏在缓存里。
+func TestPromoteQuotaGateRejectsBeforeAnyByteLands(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	const (
+		quota    = 10000
+		existing = 8000
+		upSize   = 4000
+	)
+	f := newFixture(t, 0, quota)
+	assets := NewAssetRepo(db)
+	h := newTransferHarness(t, db, assets)
+
+	f.newAsset(t, existing)
+	up := h.newUpload(t, f.userID, upSize)
+
+	before := h.storedObjects(t)
+	if before != 1 {
+		t.Fatalf("提升前存储里应只有 upload 自己的对象，实际 %d 个", before)
+	}
+
+	_, err := h.tr.Promote(ctx, up.ID)
+	requireCode(t, err, domain.CodeQuotaExceeded)
+
+	if n := h.storedObjects(t); n != before {
+		t.Fatalf("超配额被拒后存储里多出了 %d 个对象；配额检查必须在复制之前", n-before)
+	}
+	sum, count, err := assets.SumBytes(ctx, f.userID)
+	requireNoErr(t, err, "sum asset bytes")
+	if count != 1 || sum != existing {
+		t.Fatalf("超配额被拒却落了库：%d 件 / %d 字节，want 1 件 / %d 字节", count, sum, existing)
+	}
+	if cached := cachedUsage(t, db, f.userID); cached != existing {
+		t.Fatalf("被拒的提升让用量变成 %d，应保持 %d（预占没还回去）", cached, existing)
+	}
+
+	// upload 必须仍是未提升状态，否则 24h 后的回收扫描会跳过它，
+	// 一个谁都用不上的对象就永远赖在磁盘上了。
+	after, err := h.uploads.Get(ctx, up.ID)
+	requireNoErr(t, err, "reload upload")
+	if after.AssetID != nil {
+		t.Fatalf("被拒的提升把 upload 标成了已提升：asset_id = %q", *after.AssetID)
+	}
+}
+
+// TestPromoteIdempotentAtExactQuota 守住"闸不能吃掉幂等"。
+//
+// 配额刻意设成与素材**恰好等大**：第一次提升把它用满，第二次提升走的是
+// "已提升就返回同一件"的分支。闸要是放在那个分支之前，第二次会再预占一份
+// 已经计过费的字节，used + size > quota 直接误拒——而现实里这就是一个任务的
+// 两个输入槽引用同一张图。
+//
+// 这条与闸本身无关，去掉闸它也该是绿的。
+func TestPromoteIdempotentAtExactQuota(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	const size = 65536
+	f := newFixture(t, 0, size) // 配额与素材恰好等大
+	assets := NewAssetRepo(db)
+	h := newTransferHarness(t, db, assets)
+
+	up := h.newUpload(t, f.userID, size)
+
+	first, err := h.tr.Promote(ctx, up.ID)
+	requireNoErr(t, err, "first promote")
+	if got := cachedUsage(t, db, f.userID); got != size {
+		t.Fatalf("首次提升后用量 = %d，want %d", got, size)
+	}
+
+	second, err := h.tr.Promote(ctx, up.ID)
+	requireNoErr(t, err, "second promote at exact quota")
+	if second.ID != first.ID {
+		t.Fatalf("重复提升产出了第二件资产：%s vs %s", second.ID, first.ID)
+	}
+
+	sum, count, err := assets.SumBytes(ctx, f.userID)
+	requireNoErr(t, err, "sum asset bytes")
+	cached := cachedUsage(t, db, f.userID)
+	t.Logf("两次提升后：users.storage_used_bytes = %d，SUM(assets.bytes) = %d（%d 件）", cached, sum, count)
+
+	if count != 1 || sum != size {
+		t.Fatalf("重复提升应只有 1 件 %d 字节的资产，实际 %d 件 / %d 字节", size, count, sum)
+	}
+	if cached != size {
+		t.Fatalf("第二次提升把用量推到了 %d，want %d（幂等调用不该再占配额）", cached, size)
+	}
+}
+
+// TestPromoteWithinQuotaStillSucceeds 证明加闸没有把正常路径改坏：
+// 配额还剩得下的用户照旧提升成功，且用量恰好涨一件素材的大小。
+//
+// 剩余空间刻意只比素材大一点（剩 5000 收一个 4000），贴着边界过——
+// 一个把预占算大了（比如照 Transfer 那样退到 32MB 估值）的实现会在这里被挡住。
+func TestPromoteWithinQuotaStillSucceeds(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	const (
+		quota    = 10000
+		existing = 5000
+		upSize   = 4000
+	)
+	f := newFixture(t, 0, quota)
+	assets := NewAssetRepo(db)
+	h := newTransferHarness(t, db, assets)
+
+	f.newAsset(t, existing)
+	up := h.newUpload(t, f.userID, upSize)
+
+	a, err := h.tr.Promote(ctx, up.ID)
+	requireNoErr(t, err, "promote within quota")
+	if a.Bytes != upSize {
+		t.Fatalf("提升出来的资产大小 = %d，want %d", a.Bytes, upSize)
+	}
+
+	sum, count, err := assets.SumBytes(ctx, f.userID)
+	requireNoErr(t, err, "sum asset bytes")
+	cached := cachedUsage(t, db, f.userID)
+	t.Logf("配额内提升后：users.storage_used_bytes = %d，SUM(assets.bytes) = %d（%d 件）", cached, sum, count)
+
+	if count != 2 || sum != existing+upSize {
+		t.Fatalf("配额内提升应落到 2 件 / %d 字节，实际 %d 件 / %d 字节", existing+upSize, count, sum)
+	}
+	if cached != sum {
+		t.Fatalf("配额内提升的用量记了 %.3f 遍：缓存 %d，逐条求和 %d",
+			float64(cached)/float64(sum), cached, sum)
+	}
+
+	promoted, err := h.uploads.Get(ctx, up.ID)
+	requireNoErr(t, err, "reload upload")
+	if promoted.AssetID == nil || *promoted.AssetID != a.ID {
+		t.Fatalf("提升成功后 upload 未指向新资产：%v", promoted.AssetID)
+	}
+}
+
+// TestPromoteReleasesReservationWhenPersistFails 验证提升的失败路径不漏预占。
+//
+// 与转存同理：预占不还回去的话，反复失败的提升会把配额一点点吃光，而用户的
+// 资产库里一件东西都没多。加闸引入了这条新的失败路径，因此要单独钉住。
+func TestPromoteReleasesReservationWhenPersistFails(t *testing.T) {
+	db := requireDB(t)
+	ctx := context.Background()
+	const (
+		existing = 4096
+		upSize   = 65536
+	)
+	f := newFixture(t, 0, 1<<30)
+	assets := NewAssetRepo(db)
+
+	f.newAsset(t, existing)
+	before := cachedUsage(t, db, f.userID)
+	if before != existing {
+		t.Fatalf("垫底资产后用量 = %d，want %d", before, existing)
+	}
+
+	h := newTransferHarness(t, db, failingCreateAssets{AssetRepo: assets})
+	up := h.newUpload(t, f.userID, upSize)
+
+	if _, err := h.tr.Promote(ctx, up.ID); err == nil {
+		t.Fatal("落库失败时 Promote 应报错")
+	}
+
+	sum, _, sumErr := assets.SumBytes(ctx, f.userID)
+	requireNoErr(t, sumErr, "sum asset bytes")
+	cached := cachedUsage(t, db, f.userID)
+	t.Logf("提升落库失败后：users.storage_used_bytes = %d，SUM(assets.bytes) = %d", cached, sum)
+
+	if cached != before {
+		t.Fatalf("提升失败后用量 = %d，应还回预占回到 %d", cached, before)
+	}
+	if cached != sum {
+		t.Fatalf("失败路径让缓存与真相分家：缓存 %d，逐条求和 %d", cached, sum)
 	}
 }
