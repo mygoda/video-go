@@ -11,15 +11,27 @@ interface ConversationDockProps {
   projectId: string;
   conversation: CanvasMessage[];
   refCards: CanvasCard[];
+  /**
+   * 折叠态由画布页持有：就地编辑的编辑器和这个坞抢的是同一个右下角，
+   * 开编辑器时得由外面把坞收起来。
+   */
+  collapsed: boolean;
+  onCollapsedChange(next: boolean): void;
   onRemoveRef(cardId: string): void;
 }
 
 /** 对话与画布同屏：产出落到画布这件事，看不见就等于没发生 */
-export function ConversationDock({ projectId, conversation, refCards, onRemoveRef }: ConversationDockProps) {
+export function ConversationDock({
+  projectId,
+  conversation,
+  refCards,
+  collapsed,
+  onCollapsedChange,
+  onRemoveRef,
+}: ConversationDockProps) {
   const [text, setText] = useState('');
   const [skillId, setSkillId] = useState<string | null>(null);
   const [skillOpen, setSkillOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
   const [sending, setSending] = useState(false);
   const { data: skills } = useSkills();
   const qc = useQueryClient();
@@ -51,7 +63,7 @@ export function ConversationDock({ projectId, conversation, refCards, onRemoveRe
             className="vc-btn"
             aria-label={collapsed ? '展开对话' : '折叠对话'}
             aria-expanded={!collapsed}
-            onClick={() => setCollapsed((v) => !v)}
+            onClick={() => onCollapsedChange(!collapsed)}
           >
             {collapsed ? '▴' : '▾'}
           </button>

@@ -7,6 +7,7 @@ import type {
   CanvasOp,
   CanvasProject,
   CanvasState,
+  CanvasStoryboardResponse,
   CircuitBreakerState,
   CleanupResult,
   CleanupTarget,
@@ -102,6 +103,15 @@ export const api = {
     request<CanvasChatResponse>(`/canvas/${projectId}/chat`, {
       method: 'POST',
       body: { message, ref_card_ids, skill_id },
+    }),
+
+  // 拆分镜由用户在剧本卡上主动发起，剧本那一步不会自己走到这里。
+  // shot_count 的上限（12）后端会 400 顶回来，前端在流程条上提前拦一道：
+  // 让人点了才知道自己填的数不合法，等于没有上限。
+  storyboard: (projectId: string, card_id: string, shot_count: number) =>
+    request<CanvasStoryboardResponse>(`/canvas/${projectId}/storyboard`, {
+      method: 'POST',
+      body: { card_id, shot_count },
     }),
 
   // card_ids 是**有序**的，顺序即成片里的片段顺序，后端不排序也不去歧义。

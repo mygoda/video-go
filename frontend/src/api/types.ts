@@ -242,6 +242,14 @@ export interface CanvasChatResponse {
   task_ids?: string[];
 }
 
+export interface CanvasStoryboardResponse {
+  reply_message_id: string;
+  revision: number;
+  /** 拆镜头只落文字，恒定是空数组。字段保留着，是为了让「这一步不派任务」是个能读到的事实 */
+  task_ids: string[];
+  cards: CanvasCard[];
+}
+
 export interface StreamEvent {
   event:
     | 'task.updated'

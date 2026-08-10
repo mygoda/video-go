@@ -2,15 +2,20 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasCard, CanvasOp, CanvasState, ShotParams } from '@/api/types';
+import { api } from '@/api/endpoints';
+import { ApiError } from '@/api/client';
 import { qk, useCanvas, useMe, useProjects } from '@/api/queries';
 import { useAuthStore } from '@/stores/auth';
+import { toast } from '@/stores/toast';
 import { useViewport } from '@/canvas/useViewport';
 import { useCanvasSync } from '@/canvas/useCanvasSync';
 import { CanvasCardView } from '@/canvas/CanvasCardView';
 import { ConversationDock } from '@/canvas/ConversationDock';
 import { CardRerunPanel } from '@/canvas/CardRerunPanel';
 import { ComposeBar } from '@/canvas/ComposeBar';
+import { FlowStatusBar } from '@/canvas/FlowStatusBar';
 import { ScriptVersionsPanel } from '@/canvas/ScriptVersionsPanel';
+import { activeScript, MAX_SHOTS } from '@/canvas/flow';
 import type { ScriptVersion } from '@/canvas/script';
 import { readShot, relayoutShots, shotParams, shotSlot, shotsOf, SHOT_CARD_H, SHOT_CARD_W } from '@/canvas/shot';
 
@@ -59,6 +64,10 @@ export function CanvasPage() {
   // 所以它是 string[] 而不是 Set——用户点选的先后是这个功能唯一的排序依据。
   const [composing, setComposing] = useState(false);
   const [picks, setPicks] = useState<string[]>([]);
+  // 拆分镜是同步接口，一次只放一个在飞：连点两下会拆出两组镜头卡，
+  // 用户看到的是同一个剧本下莫名其妙多了一倍的镜头。
+  const [storyboarding, setStoryboarding] = useState(false);
+  const [dockCollapsed, setDockCollapsed] = useState(false);
   // 拖卡片的中间位置只落在这里，松手才写进缓存并排队上行
   const dragRef = useRef<DragState | null>(null);
   const [dragPos, setDragPos] = useState<{ id: string; x: number; y: number } | null>(null);
@@ -67,6 +76,11 @@ export function CanvasPage() {
   const cards = canvas?.cards ?? [];
   const selected = cards.find((c) => c.id === selectedId) ?? null;
   const lineageIds = new Set(selected?.refs ?? []);
+
+  // 流程条盯着的那一条创作线：选中的剧本（或选中镜头回溯到的剧本），
+  // 没选就是最新的那份。加镜 / 删镜 / 调镜数都作用在它名下。
+  const flowScript = useMemo(() => activeScript(cards, selectedId), [cards, selectedId]);
+  const flowShots = useMemo(() => (flowScript ? shotsOf(cards, flowScript.id) : []), [cards, flowScript]);
 
   const refCards = useMemo(
     () => (selected && !droppedRefs.includes(selected.id) ? [selected] : []),
@@ -124,6 +138,19 @@ export function CanvasPage() {
     [cards, dragPos, enqueue],
   );
 
+  /**
+   * 开始就地编辑，顺手把对话坞收起来。
+   *
+   * 编辑器展开后比卡片高得多，卡片落在画布右下角时「保存」正好落在坞的浮层
+   * 底下，点不着（⌘/Ctrl+Enter 不受影响，但那是给知道的人用的）。这两样东西
+   * 抢的是同一个角落，就跟合成条与对话坞一样，同一时刻只留一个。
+   * 收起不是关掉：坞还挂着，输了一半的话和选好的技能都在，用户随时能展回去。
+   */
+  function startEditing(id: string): void {
+    setEditingId(id);
+    setDockCollapsed(true);
+  }
+
   function addTextCard(): void {
     const rect = viewportEl?.getBoundingClientRect();
     const at = rect ? toWorld(rect.left + rect.width / 2, rect.top + 160) : { x: 0, y: 0 };
@@ -175,43 +202,105 @@ export function CanvasPage() {
     };
     enqueue([{ type: 'card.create', card }], (prev) => ({ ...prev, cards: [...prev.cards, card] }));
     setSelectedId(card.id);
-    setEditingId(card.id);
+    startEditing(card.id);
   }
 
   /**
-   * 镜头卡挂在当前选中的剧本卡下：refs 指回剧本（血缘就是这么记的，不建边表），
-   * 镜号顺着已有的最大镜号加一，落点直接取该镜号的格子。
+   * 在一张剧本卡名下追加 n 个空镜头：refs 指回剧本（血缘就是这么记的，不建边表），
+   * 镜号顺着已有的最大镜号往下排，落点直接取该序号的格子。
+   *
+   * 一次 enqueue 建完而不是循环调用：调镜数时会一口气补好几镜，一镜一个
+   * op 批次会让画布连着抖好几下，中途失败还会只落一半。
    */
-  function addShotCard(): void {
-    if (!selected || selected.kind !== 'script') return;
-    const script = selected;
+  function appendShots(script: CanvasCard, n: number): CanvasCard[] {
     const siblings = shotsOf(cards, script.id);
-    const nextNo = siblings.reduce((max, s) => Math.max(max, readShot(s).shot_no), 0) + 1;
-    const at = shotSlot(script, siblings.length);
-    const card: CanvasCard = {
-      id: `c_${Date.now().toString(36)}`,
-      kind: 'shot',
-      x: at.x,
-      y: at.y,
-      w: SHOT_CARD_W,
-      h: SHOT_CARD_H,
-      z: cards.length + 1,
-      params: shotParams({
-        shot_no: nextNo,
-        description: '',
-        dialogue: '',
-        duration_sec: 0,
-        camera: '',
-        shot_size: '',
-      }),
-      refs: [script.id],
-      history: [],
-      auto_placed: true,
-      created_at: new Date().toISOString(),
-    };
-    enqueue([{ type: 'card.create', card }], (prev) => ({ ...prev, cards: [...prev.cards, card] }));
+    const maxNo = siblings.reduce((max, s) => Math.max(max, readShot(s).shot_no), 0);
+    const stamp = Date.now().toString(36);
+    const created = Array.from({ length: n }, (_, i): CanvasCard => {
+      const at = shotSlot(script, siblings.length + i);
+      return {
+        id: `c_${stamp}${i ? `_${i}` : ''}`,
+        kind: 'shot',
+        x: at.x,
+        y: at.y,
+        w: SHOT_CARD_W,
+        h: SHOT_CARD_H,
+        z: cards.length + 1 + i,
+        params: shotParams({
+          shot_no: maxNo + 1 + i,
+          description: '',
+          dialogue: '',
+          duration_sec: 0,
+          camera: '',
+          shot_size: '',
+        }),
+        refs: [script.id],
+        history: [],
+        auto_placed: true,
+        created_at: new Date().toISOString(),
+      };
+    });
+    enqueue(
+      created.map((card) => ({ type: 'card.create' as const, card })),
+      (prev) => ({ ...prev, cards: [...prev.cards, ...created] }),
+    );
+    return created;
+  }
+
+  /**
+   * 删掉末尾 n 镜。
+   *
+   * 删末尾而不是删选中的那一镜：镜号因此始终是连续的 1..N，用户不用回头
+   * 补编号。要删中间某一镜走顶栏的「删除卡片」——那是明确指着一张卡说的话。
+   */
+  function removeShots(script: CanvasCard, n: number): void {
+    const victims = shotsOf(cards, script.id).slice(-n);
+    if (!victims.length) return;
+    const ids = new Set(victims.map((c) => c.id));
+    setSelectedId((cur) => (cur && ids.has(cur) ? null : cur));
+    setEditingId((cur) => (cur && ids.has(cur) ? null : cur));
+    enqueue(
+      victims.map((c) => ({ type: 'card.delete' as const, id: c.id })),
+      (prev) => ({ ...prev, cards: prev.cards.filter((c) => !ids.has(c.id)) }),
+    );
+  }
+
+  function addShotCard(): void {
+    if (!selected || selected.kind !== 'script' || shotsOf(cards, selected.id).length >= MAX_SHOTS) return;
+    const [card] = appendShots(selected, 1);
     setSelectedId(card.id);
-    setEditingId(card.id);
+    startEditing(card.id);
+  }
+
+  /**
+   * 把一张剧本卡下的镜头凑够 target 个。多退少补，都由用户点了才发生——
+   * 这一步同样不会自己往下走。
+   */
+  function resizeShots(target: number): void {
+    if (!flowScript) return;
+    const diff = target - flowShots.length;
+    if (diff > 0) appendShots(flowScript, diff);
+    else if (diff < 0) removeShots(flowScript, -diff);
+  }
+
+  /**
+   * 拆分镜：这一步是**用户点出来的**，剧本写完不会自己走到这里。
+   *
+   * 发之前必须把队列冲干净：用户很可能刚改完剧本正文，那次 patch 还压在
+   * 500ms 的防抖里，后端读到的会是改之前的旧稿，拆出来的镜头对不上他看见的字。
+   */
+  async function runStoryboard(count: number): Promise<void> {
+    if (!flowScript || storyboarding) return;
+    setStoryboarding(true);
+    try {
+      await flush();
+      await api.storyboard(projectId, flowScript.id, count);
+      await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : '拆分镜失败，请稍后重试', 'danger');
+    } finally {
+      setStoryboarding(false);
+    }
   }
 
   /**
@@ -303,8 +392,14 @@ export function CanvasPage() {
           <button
             type="button"
             className="btn btn-sm"
-            disabled={selected?.kind !== 'script'}
-            title={selected?.kind === 'script' ? '在这张剧本下加一个镜头' : '先选中一张剧本卡'}
+            disabled={selected?.kind !== 'script' || flowShots.length >= MAX_SHOTS}
+            title={
+              selected?.kind !== 'script'
+                ? '先选中一张剧本卡'
+                : flowShots.length >= MAX_SHOTS
+                  ? `镜头数最多 ${MAX_SHOTS}`
+                  : '在这张剧本下加一个镜头'
+            }
             onClick={addShotCard}
           >
             ＋ 镜头
@@ -325,6 +420,16 @@ export function CanvasPage() {
           </button>
         </div>
       </header>
+
+      <FlowStatusBar
+        script={flowScript}
+        shotCount={flowShots.length}
+        busy={storyboarding}
+        onStoryboard={(count) => void runStoryboard(count)}
+        onAddShot={() => flowScript && appendShots(flowScript, 1)}
+        onRemoveShot={() => flowScript && removeShots(flowScript, 1)}
+        onResizeShots={resizeShots}
+      />
 
       <div
         ref={setViewportEl}
@@ -369,7 +474,7 @@ export function CanvasPage() {
                 editing={card.id === editingId}
                 onSelect={onCardClick}
                 onDragStart={onCardDragStart}
-                onEditStart={setEditingId}
+                onEditStart={startEditing}
                 onEditCancel={() => setEditingId(null)}
                 onSaveScript={saveScript}
                 onSaveShot={saveShot}
@@ -387,7 +492,7 @@ export function CanvasPage() {
                   className="icon-btn"
                   title="编辑正文（也可以双击卡片）"
                   aria-label="编辑正文"
-                  onClick={() => setEditingId(selected.id)}
+                  onClick={() => startEditing(selected.id)}
                 >
                   ✎
                 </button>
@@ -486,6 +591,8 @@ export function CanvasPage() {
               projectId={projectId}
               conversation={canvas.conversation}
               refCards={refCards}
+              collapsed={dockCollapsed}
+              onCollapsedChange={setDockCollapsed}
               onRemoveRef={(id) => setDroppedRefs((prev) => [...prev, id])}
             />
           )}

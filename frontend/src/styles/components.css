@@ -521,6 +521,44 @@ a { color: inherit; text-decoration: none; }
 }
 .dock-input input::placeholder { color: var(--text-tertiary); }
 
+/* 创作流程条。
+   放画布上方而不是底部：底部那一槽已经被对话坞与合成条轮流占着，而「走到
+   哪一步了」必须一直看得见，不能被别的浮层盖掉。也因此它是常规流里的一条，
+   不是浮层——不遮挡画布，画布自己缩一行。 */
+.flow-bar {
+  display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-base); border-bottom: 1px solid var(--border-subtle);
+}
+.flow-steps { display: flex; align-items: center; margin: 0; padding: 0; list-style: none; }
+.flow-step {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--text-xs); color: var(--text-tertiary); white-space: nowrap;
+}
+.flow-step + .flow-step { margin-left: var(--space-2); }
+.flow-step + .flow-step::before { content: '→'; margin-right: var(--space-2); color: var(--text-tertiary); }
+.flow-dot {
+  width: 18px; height: 18px; flex: none;
+  display: grid; place-items: center;
+  border: 1px solid var(--border-default); border-radius: var(--radius-full);
+  font-size: var(--text-2xs); color: var(--text-tertiary);
+}
+.flow-step.done { color: var(--text-secondary); }
+.flow-step.done .flow-dot { background: var(--success-bg); border-color: var(--success); color: var(--success); }
+.flow-step.current { color: var(--text-primary); font-weight: var(--weight-medium); }
+.flow-step.current .flow-dot { background: var(--accent); border-color: transparent; color: var(--text-on-accent); }
+/* 未解锁靠虚线圈表达，不只靠颜色：颜色单独承载状态，色觉障碍的人就读不到 */
+.flow-step.locked .flow-dot { border-style: dashed; background: transparent; }
+
+.flow-action { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+.flow-action .hint { max-width: 340px; }
+.flow-field {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-xs); color: var(--text-secondary); white-space: nowrap;
+}
+.flow-action .num-input { width: 56px; text-align: center; }
+.flow-count { font-size: var(--text-xs); color: var(--text-secondary); }
+
 /* 合成条占的是对话坞那个槽位（同一时刻只出现一个），所以外形与 .dock 一致，
    只是内容是自上而下的一列而不是消息流 */
 .compose-bar {
