@@ -582,6 +582,12 @@ a { color: inherit; text-decoration: none; }
   border-radius: var(--radius-xl); box-shadow: var(--shadow-modal);
   z-index: var(--z-dock); overflow-y: auto;
 }
+/* 指针事件按与坞相同的标准发放：真控件收下，纯文本让出去。
+   合成模式的主交互就是在画布上依次点选卡片，压在合成条底下的那张卡要是点不着，
+   这一段就永远拼不进成片，而条是不透明的，用户看不出那儿还压着东西。
+   pointer-events 是继承属性，所以 .compose-picks 与提示文字不必再各写一条。 */
+.canvas-overlay > .compose-bar { pointer-events: none; }
+.compose-head, .compose-result, .compose-bar > .btn { pointer-events: auto; }
 .compose-head {
   display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
   font-size: var(--text-xs); color: var(--text-secondary);

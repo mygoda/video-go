@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasCard, Task } from '@/api/types';
 import { api } from '@/api/endpoints';
@@ -39,12 +39,40 @@ export function ComposeBar({ projectId, picks, cards, onClear, onExit }: Compose
   const { data: tasks } = useTasks();
   const [taskId, setTaskId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const barRef = useRef<HTMLDivElement>(null);
 
   const picked = picks.map((id) => cards.find((c) => c.id === id)).filter((c): c is CanvasCard => Boolean(c));
   // 没有产物的卡片拼不进去（后端会逐个报出来），提交前就先说清楚是哪几张，
   // 免得用户点了合成才知道自己选中了一张还在转圈的卡。
   const notReady = picked.filter((c) => !c.asset_id);
   const task = taskId ? tasks?.find((t) => t.id === taskId) : undefined;
+
+  /**
+   * 滚轮手动接回来，理由与坞同源但落点不同：坞让出指针的是内层 .dock-body、滚的
+   * 也是它；合成条没有内层滚动体，`overflow-y:auto` 就在让出指针的那个容器自己
+   * 身上。所以判据不能按「事件目标在不在条内」分，得整块矩形一律接管——
+   * useViewport 的 wheel 监听对落在画布视口里的滚轮无条件 `preventDefault()` 去平移
+   * 画布，浏览器的原生滚动早就被它吃掉了，条上哪一处都指望不上。
+   *
+   * 挂在画布视口上、走捕获阶段：视口自己的监听是冒泡阶段的，捕获先跑才拦得住它。
+   */
+  useEffect(() => {
+    const bar = barRef.current;
+    const viewport = bar?.closest('.canvas-viewport');
+    if (!bar || !viewport) return;
+    const onWheel = (e: Event) => {
+      const wheel = e as WheelEvent;
+      const at = bar.getBoundingClientRect();
+      const inside =
+        wheel.clientX >= at.left && wheel.clientX <= at.right && wheel.clientY >= at.top && wheel.clientY <= at.bottom;
+      if (!inside || bar.scrollHeight <= bar.clientHeight) return;
+      wheel.preventDefault();
+      wheel.stopPropagation();
+      bar.scrollTop += wheel.deltaY;
+    };
+    viewport.addEventListener('wheel', onWheel, { capture: true, passive: false });
+    return () => viewport.removeEventListener('wheel', onWheel, { capture: true });
+  }, []);
 
   async function submit(): Promise<void> {
     setBusy(true);
@@ -71,7 +99,7 @@ export function ComposeBar({ projectId, picks, cards, onClear, onExit }: Compose
   }
 
   return (
-    <div className="compose-bar">
+    <div className="compose-bar" ref={barRef}>
       <div className="compose-head">
         <strong>🎬 合成成片</strong>
         <span className="sub">按点选顺序拼接 · 已选 {picks.length} 段</span>
