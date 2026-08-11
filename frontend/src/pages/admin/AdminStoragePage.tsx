@@ -8,10 +8,16 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { formatBytes } from '@/components/admin/format';
 import { toast } from '@/stores/toast';
 
-const TARGETS: { value: CleanupTarget; label: string; desc: string }[] = [
-  { value: 'orphan_files', label: '孤儿文件', desc: '数据库里已无引用、但仍占着对象存储的文件' },
+// offline 的项后端一律返 400，页面上只做展示，不给触发入口。
+const TARGETS: { value: CleanupTarget; label: string; desc: string; offline?: boolean }[] = [
   { value: 'expired_uploads', label: '过期上传', desc: '上传后一直没被任何任务使用的临时文件' },
   { value: 'soft_deleted_assets', label: '已删除资产', desc: '用户删除后进入回收站、超过保留期的产物' },
+  {
+    value: 'orphan_files',
+    label: '孤儿文件（离线脚本）',
+    desc: '数据库里已无引用、但仍占着对象存储的文件。要反向全量列举存储后端才能比对，只能由离线脚本执行，页面上无法触发。',
+    offline: true,
+  },
 ];
 
 function errorText(err: unknown): string {
@@ -22,10 +28,13 @@ export function AdminStoragePage() {
   const qc = useQueryClient();
   const { data: usage, isPending } = useAdminStorage();
 
-  const [target, setTarget] = useState<CleanupTarget>('orphan_files');
+  const [target, setTarget] = useState<CleanupTarget>('expired_uploads');
   const [days, setDays] = useState(30);
   const [preview, setPreview] = useState<CleanupResult | null>(null);
   const [confirming, setConfirming] = useState(false);
+
+  const current = TARGETS.find((t) => t.value === target);
+  const offline = current?.offline === true;
 
   const cleanup = useMutation({
     mutationFn: (dry_run: boolean) =>
@@ -111,7 +120,7 @@ export function AdminStoragePage() {
                 </option>
               ))}
             </select>
-            <p className="hint">{TARGETS.find((t) => t.value === target)?.desc}</p>
+            <p className="hint">{current?.desc}</p>
           </div>
           <div className="field">
             <label htmlFor="cl-days">早于多少天</label>
@@ -132,7 +141,7 @@ export function AdminStoragePage() {
             <button
               type="button"
               className="btn"
-              disabled={cleanup.isPending}
+              disabled={offline || cleanup.isPending}
               onClick={() => cleanup.mutate(true)}
             >
               预览
@@ -141,7 +150,9 @@ export function AdminStoragePage() {
             <button
               type="button"
               className="btn btn-primary"
-              disabled={cleanup.isPending || !preview?.dry_run || preview.candidate_count === 0}
+              disabled={
+                offline || cleanup.isPending || !preview?.dry_run || preview.candidate_count === 0
+              }
               onClick={() => setConfirming(true)}
             >
               执行清理
