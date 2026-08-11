@@ -64,7 +64,20 @@ type chatCall struct {
 	modelID   string // 用户这次点名的模型，空串表示按默认规则选
 	projectID string
 	cardID    string
-	prompt    string
+
+	// prompt 是真正发给上游的那一串，含我们拼的系统提示词。它只进
+	// adapter.SubmitInput（见 chatcall.chatOnce），**不落库**。
+	prompt string
+
+	// userInput 是这次调用里用户自己的那一份，落进 tasks.prompt：写剧本是他发的
+	// 那句话，优化是他写的修改要求，拆分镜是被拆的那张剧本卡的正文摘要。
+	//
+	// 两者必须分开，因为 tasks.prompt 会原样出现在用户自己就能拉的
+	// GET /api/tasks 里——把 prompt 直接落下去，等于把系统提示词发给每一个
+	// 问得出这个接口的人。而 tasks.prompt 在其余所有链路上装的本来就是用户
+	// 提交的那段话（见 handlers_tasks.submitTask 的 Prompt: req.Prompt），
+	// 这三条落 userInput 才是与全局一致的那个语义，不是为了遮挡开的特例。
+	userInput string
 }
 
 // chatBill 是一次同步 chat 调用已经冻结的那笔积分。
@@ -105,7 +118,8 @@ func (s *server) holdChat(ctx context.Context, call chatCall, model domain.Model
 		ModelID:       model.ID,
 		ProviderID:    model.ProviderID,
 		Status:        domain.TaskStatusRunning,
-		Prompt:        call.prompt,
+		Prompt:        call.userInput, // 不是 call.prompt，理由见 chatCall 的字段注释
+
 		Params:        params,
 		EstimatedCost: cost,
 		CanvasID:      strPtrOrNil(call.projectID),

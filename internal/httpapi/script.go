@@ -51,12 +51,13 @@ type scriptDraft struct {
 // refs 是用户在对话里勾选的卡片，它们的标题与正文作为上下文一起发上去——
 // 「多卡引用为下次输入」如果不真的进入提示词，那个勾选框就只是个装饰。
 //
-// call 带着计费需要的身份与画布坐标；step 与 prompt 由本函数填，调用方
-// 不需要知道这一步在提示词里说了什么。返回的 bill 已经冻好钱，
+// call 带着计费需要的身份与画布坐标；step、prompt 与 userInput 由本函数填，
+// 调用方不需要知道这一步在提示词里说了什么。返回的 bill 已经冻好钱，
 // 调用方必须结掉它（见 chatbill.go）；err 非 nil 时 bill 为 nil。
 func (s *server) generateScript(ctx context.Context, call chatCall, idea string, refs []domain.Card) (scriptDraft, chatTrace, *chatBill, error) {
 	call.step = "script"
 	call.prompt = scriptPrompt(idea, refs)
+	call.userInput = idea
 
 	reply, trace, bill, err := s.chatOnce(ctx, call)
 	if err != nil {
@@ -218,6 +219,7 @@ func scriptReply(draft scriptDraft, modelID string) string {
 func (s *server) refineScript(ctx context.Context, call chatCall, card domain.Card, instruction string) (scriptDraft, chatTrace, *chatBill, error) {
 	call.step = "refine"
 	call.prompt = refinePrompt(card, instruction)
+	call.userInput = instruction
 
 	reply, trace, bill, err := s.chatOnce(ctx, call)
 	if err != nil {
