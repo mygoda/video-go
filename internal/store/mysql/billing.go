@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strconv"
+	"strings"
 
 	"github.com/aigc-pool/aigc-pool/internal/billing"
 	"github.com/aigc-pool/aigc-pool/internal/domain"
@@ -104,6 +105,8 @@ func (l *ledger) Charge(ctx context.Context, userID, taskID string, actual int) 
 			return err
 		}
 		if settled {
+			// 串行重复调用的快路径。并发时它会漏（快照读），最终由 settleTx
+			// 的唯一键顶掉——两条路都得回同一个哨兵，调用方才分得清。
 			return conflict("task "+taskID+" has already been settled", billing.ErrAlreadySettled)
 		}
 		if actual > held {
@@ -117,8 +120,7 @@ func (l *ledger) Charge(ctx context.Context, userID, taskID string, actual int) 
 		// 释放的冻结额是**整笔 held**，不是 amount：held == actual 时 amount 为 0，
 		// 但那笔冻结确实已经变成实扣，再挂在 credits_held 上就是重复占用。
 		entry.Amount = held - actual
-		_, err = appendLedgerTx(ctx, tx, &entry, -held)
-		return err
+		return settleTx(ctx, tx, &entry, -held)
 	})
 	if err != nil {
 		return domain.LedgerEntry{}, err
@@ -159,13 +161,15 @@ func (l *ledger) Refund(ctx context.Context, userID, taskID string, reason strin
 			// 幂等的边界：已结算的任务再退一次会把钱凭空变多。
 			// 重复的失败回调是常态（webhook + 轮询同时判失败），必须挡住。
 			//
+			// 这里是**串行**重复调用的快路径：判定在快照里做，真并发时它会
+			// 放行，由 settleTx 的唯一键做最终裁决（见 taskHoldTx 的注释）。
+			//
 			// cause 带上 billing.ErrAlreadySettled，是为了让调用方能把这一种
 			// conflict 与"真的没退成"分开——两者的 Code 都是 conflict。
 			return conflict("task "+taskID+" has already been settled", billing.ErrAlreadySettled)
 		}
 		entry.Amount = held
-		_, err = appendLedgerTx(ctx, tx, &entry, -held)
-		return err
+		return settleTx(ctx, tx, &entry, -held)
 	})
 	if err != nil {
 		return domain.LedgerEntry{}, err
@@ -182,12 +186,20 @@ func (l *ledger) Refund(ctx context.Context, userID, taskID string, reason strin
 // 同 key 二次调用返回 domain.CodeConflict。这里不去"返回已有的那条"，
 // 因为接口注释明确要求 409：让管理员看到"这次点击没有生效"，
 // 比静默返回一条看起来成功的旧记录更不容易造成误操作。
+//
+// 键由管理员自己给，而任务结算也写这一列（见 settleIdempotencyKey），
+// 因此带结算前缀的键必须拒收：那等于让人手工把某个任务的结算钉死。
 func (l *ledger) Topup(ctx context.Context, userID string, amount int, reason, operatorID, idempotencyKey string) (domain.LedgerEntry, error) {
 	if err := requireID("user id", userID); err != nil {
 		return domain.LedgerEntry{}, err
 	}
 	if idempotencyKey == "" {
 		return domain.LedgerEntry{}, invalidParam("topup requires an idempotency key")
+	}
+	if strings.HasPrefix(idempotencyKey, settleKeyPrefix) {
+		return domain.LedgerEntry{}, invalidParam(
+			"topup idempotency key must not start with " + settleKeyPrefix +
+				"; that namespace belongs to task settlement")
 	}
 	if amount == 0 {
 		return domain.LedgerEntry{}, invalidParam("topup amount must not be zero")
@@ -236,11 +248,71 @@ func (l *ledger) Balance(ctx context.Context, userID string) (domain.Balance, er
 	return b, nil
 }
 
+// settleKeyPrefix 是结算流水在 credit_ledger.idempotency_key 上占用的命名空间。
+//
+// 这一列被管理员充值与任务结算共用同一个唯一键，因此必须分开命名空间：
+// 管理员若能提交一个 "settle:<task-id>" 形态的充值键，就能把那个任务的
+// 结算永久顶掉——冻结额再也释放不了，用户的钱卡在 credits_held 上。
+// Topup 因此拒收带本前缀的键。
+const settleKeyPrefix = "settle:"
+
+// settleIdempotencyKey 是一个任务的结算幂等键。
+//
+// 每个任务只允许结算一次，charge 与 refund **共用同一个键**：它们是同一件事
+// 的两种结果（收钱 / 不收钱），不是两笔可以并存的账。这与 taskHoldTx 里
+// "type IN ('charge','refund') 即已结算"的定义是同一条规则，
+// 只是换成了数据库能强制执行的形式。
+//
+// 长度：前缀 7 + task_id 36 = 43，装得进 VARCHAR(64)。
+func settleIdempotencyKey(taskID string) string { return settleKeyPrefix + taskID }
+
+// settleTx 落一条结算流水（charge / refund），并让唯一键充当幂等闸。
+//
+// taskHoldTx 的 settled 判定在 REPEATABLE READ 的快照里做，并发时两笔结算
+// 都会被放行（见 taskHoldTx 的注释）。这里给流水打上确定性的
+// settleIdempotencyKey，把最终裁决交给 uq_credit_ledger_idempotency：
+// 先提交的那笔留下，晚到的那笔 INSERT 撞 1062 后整个事务回滚，
+// 一分钱都没动。
+//
+// 选唯一键而不是给 taskHoldTx 那条 SELECT 加 FOR UPDATE，是因为后者会
+// 引入一个新的加锁顺序：Hold 是"先锁 users 行、再写 credit_ledger"，而加锁读
+// credit_ledger 会让结算变成"先锁 credit_ledger（且空结果集会退化成
+// idx_credit_ledger_task 上的间隙锁）、再锁 users 行"。两条路径的顺序反了，
+// 同一用户上并发的 Hold 与 Refund 就能凑出死锁——DEM-96 刚为消掉一个
+// S→X 升级死锁调过语句顺序，不值得再换一个回来。唯一键这条路不新增任何锁：
+// idempotency_key 所在的索引本来就要因这次 INSERT 被写一遍。
+//
+// 1062 在这条路径上只可能来自 settleIdempotencyKey——它是本次 INSERT 写进
+// 唯一键的唯一值，因此可以确定地翻成 billing.ErrAlreadySettled，
+// 让调用方（publish.go / runner.go / chatbill.go）继续把它与"真的没写进去"分开。
+func settleTx(ctx context.Context, tx *sql.Tx, entry *domain.LedgerEntry, heldDelta int) error {
+	taskID := *entry.TaskID
+	entry.IdempotencyKey = settleIdempotencyKey(taskID)
+	if _, err := appendLedgerTx(ctx, tx, entry, heldDelta); err != nil {
+		if isDup(err) {
+			return conflict("task "+taskID+" has already been settled", billing.ErrAlreadySettled)
+		}
+		return err
+	}
+	return nil
+}
+
 // taskHoldTx 读出某任务当前的冻结额，并报告它是否已被结算过。
 //
-// 事务内调用，依赖调用方已经通过 appendLedgerTx 之外的路径进入了事务；
-// 这里的读不额外加锁，因为 appendLedgerTx 紧接着就会 FOR UPDATE 锁住用户行，
-// 而同一用户的所有记账都串行在那把锁上。
+// **这个 settled 判定只是快路径，不是幂等闸本身。** 事务隔离级别是
+// REPEATABLE READ，本函数这条 SELECT 往往就是事务的第一次读，一致性快照
+// 由它钉死；因此并发的两笔结算各自看到的都是"还没结算"，谁也拦不住谁。
+// 之后 appendLedgerTx 的 `SELECT ... FOR UPDATE` 只把两笔**写**串行化，
+// 并不能让已经做完的**判定**重新生效——历史上这里的注释把这两件事
+// 混为一谈，代价是并发取消一次任务能退两笔钱（DEM-101）。
+//
+// 真正的闸在 credit_ledger.idempotency_key 的唯一键上：结算类流水写
+// settleIdempotencyKey(taskID)，第二笔在 INSERT 时撞 1062 被顶掉
+// （见 settleTx）。因此这里读到的 settled 只用来在**串行**重复调用时
+// 省掉一次必然失败的写，它给出 false 是安全的。
+//
+// held 同样来自快照。它只在"本任务的 hold 已提交"这个前提下有意义，
+// 而 hold 必然发生在任务入队之前、远早于任何结算。
 func taskHoldTx(ctx context.Context, tx *sql.Tx, userID, taskID string) (held int, settled bool, err error) {
 	const q = `SELECT
 		  COALESCE(SUM(CASE WHEN type = 'hold' THEN -amount ELSE 0 END), 0),
