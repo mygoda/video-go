@@ -7,6 +7,7 @@ import { estimateCost } from '@/schema/pricing';
 import { api } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
 import { qk } from '@/api/queries';
+import { uuid } from '@/lib/uuid';
 
 export interface SubmitArgs {
   model: ModelCapabilitySchema;
@@ -20,7 +21,7 @@ export interface SubmitArgs {
 export type SubmitResult = { ok: true; taskId: string } | { ok: false; error: TaskError };
 
 function newClientToken(): string {
-  return crypto.randomUUID();
+  return uuid();
 }
 
 export function useSubmitTask() {

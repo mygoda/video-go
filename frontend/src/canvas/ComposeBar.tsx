@@ -7,6 +7,7 @@ import { qk, useTasks } from '@/api/queries';
 import { toast } from '@/stores/toast';
 import { TaskCard } from '@/components/task/TaskCard';
 import { cardTitle } from './cardTitle';
+import { uuid } from '@/lib/uuid';
 
 interface ComposeBarProps {
   projectId: string;
@@ -81,7 +82,7 @@ export function ComposeBar({ projectId, picks, cards, onClear, onExit }: Compose
   async function submit(): Promise<void> {
     setBusy(true);
     try {
-      const res = await api.compose(projectId, picks, composeTitle(picked), crypto.randomUUID(), {
+      const res = await api.compose(projectId, picks, composeTitle(picked), uuid(), {
         mute,
         subtitles,
       });

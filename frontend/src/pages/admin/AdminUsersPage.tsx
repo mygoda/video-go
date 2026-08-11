@@ -7,6 +7,7 @@ import type { AdminUser, CreditLedgerType, UserRole, UserStatus } from '@/api/ty
 import { Sheet } from '@/components/admin/Sheet';
 import { formatBytes, formatRelative } from '@/components/admin/format';
 import { toast } from '@/stores/toast';
+import { uuid } from '@/lib/uuid';
 
 const LEDGER_LABEL: Record<CreditLedgerType, string> = {
   hold: '任务预扣',
@@ -215,7 +216,7 @@ function UserSheet({
     }
     setError(null);
     // 幂等键防止手抖点两次发两次积分；同一 key 后端会拒绝重放
-    adjust.mutate({ amount: value, reason: reason.trim(), idempotency_key: crypto.randomUUID() });
+    adjust.mutate({ amount: value, reason: reason.trim(), idempotency_key: uuid() });
   }
 
   return (
