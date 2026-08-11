@@ -223,9 +223,22 @@
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
-.model-option { flex-direction: column; align-items: stretch; height: auto; padding: var(--space-2); gap: 2px; }
-.model-option .row1 { display: flex; align-items: center; gap: var(--space-2); }
-.model-option .desc { font-size: var(--text-2xs); color: var(--text-tertiary); }
+.model-option {
+  flex-direction: column; align-items: stretch; height: auto;
+  padding: var(--space-2) var(--space-3); gap: 3px;
+  border: 1px solid transparent;
+  transition: background .12s ease, border-color .12s ease;
+}
+.model-option + .model-option { margin-top: 3px; }
+.model-option .row1 { display: flex; align-items: center; gap: var(--space-2); font-weight: 500; color: var(--text-primary); }
+.model-option .desc {
+  font-size: var(--text-2xs); color: var(--text-tertiary); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.model-option[aria-selected="true"] { border-color: var(--accent-border); background: var(--accent-subtle); }
+.model-option:disabled { opacity: .45; cursor: not-allowed; }
+.model-option:disabled:hover { background: transparent; color: var(--text-secondary); }
+.model-option:disabled .row1 { color: var(--text-secondary); }
 
 .dropzone-active { border-color: var(--accent-border) !important; background: var(--accent-subtle) !important; }
 
