@@ -41,6 +41,11 @@ docker-compose.yml  本地开发用的 MySQL 8.4
 
 ## 从零跑起来
 
+> **这个仓库不含任何真实凭证。** 上游 API Key、JWT 密钥、数据库口令一律只从项目根的
+> `.env` 读（该文件在 `.gitignore` 里，从未进过版本库），部署时在各自的机器上自行填写。
+> 仓库里出现的 `devpass` / `devroot` / `admin-dev-only` 这类值是 `docker-compose.yml`
+> 与 `aigcd seed` 的**本地开发占位符**，任何对外可达的部署都必须换掉。
+
 前置：Go 1.26+、Docker（本地 MySQL 用它拉起；已有 MySQL 8.0+ 也行，改 DSN 即可）。
 
 ```bash
