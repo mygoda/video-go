@@ -77,6 +77,21 @@ const probeTimeout = 15 * time.Second
 // 也不能让一次合成把进程的内存打穿——那会连累同一进程里所有别的任务。
 const maxOutputBytes = 512 << 20
 
+// stillSeconds 是静态图参与合成时的默认停留时长。
+//
+// 图片进 concat 只贡献 1 帧——两张图拼出来是 0.08 秒。那不是报错，是一件
+// 没法看的产物：文件真、能播、任务绿灯，用户只会以为功能坏了。capability
+// 明写接受 image/png、image/jpeg、image/webp，所以这条路径必须自己给图片
+// 补上时间轴。2 秒是「看得清一张分镜、又不至于拖慢十二段成片」的取值。
+//
+// 常量而不是入参：做成用户可调要牵动画布 UI 与 params 结构，是另一件事。
+const stillSeconds = 2.0
+
+// stillFPS 是静态图转出来那一小段视频的帧率。
+//
+// 跟第二轮重编码的输出对齐即可，静态画面帧率高低不影响观感，只影响体积。
+const stillFPS = 25
+
 // durationTolerance 是「拼接结果的时长 ≈ 各段时长之和」的判定容差。
 //
 // 存在的理由见 concat 的注释：`-c copy` 在各段编码参数不一致时**不报错**，
@@ -175,13 +190,13 @@ func (d driver) Invoke(ctx context.Context, in adapter.SubmitInput) (adapter.Sub
 	}
 	defer func() { _ = os.RemoveAll(work) }()
 
-	paths, wantDuration, err := d.spillSegments(ctx, work, in.Blobs, segments)
+	spilled, wantDuration, err := d.spillSegments(ctx, work, in.Blobs, segments)
 	if err != nil {
 		return adapter.SubmitResult{}, err
 	}
 
 	out := filepath.Join(work, "output.mp4")
-	if err := d.concat(ctx, work, paths, out, wantDuration); err != nil {
+	if err := d.concat(ctx, work, spilled, out, wantDuration); err != nil {
 		return adapter.SubmitResult{}, err
 	}
 
@@ -206,6 +221,15 @@ func (d driver) Invoke(ctx context.Context, in adapter.SubmitInput) (adapter.Sub
 	}, nil
 }
 
+// spilledSegment 是一段落好盘、随时可以喂给 ffmpeg 的素材。
+//
+// 带着 meta 一路传下去而不是用到时现探：拼接策略要按各段的几何是否一致来选，
+// 而 ffprobe 一次是一次进程启动，十二段探两遍就是十二次多余的 fork。
+type spilledSegment struct {
+	path string
+	meta videoMeta
+}
+
 // spillSegments 把每段的字节落到工作目录，顺带累计期望总时长。
 //
 // 落临时文件而不是管道喂给 ffmpeg：concat demuxer 要按名字引用一串输入，
@@ -213,8 +237,12 @@ func (d driver) Invoke(ctx context.Context, in adapter.SubmitInput) (adapter.Sub
 //
 // 文件名带序号前缀，顺序就是槽位里给的顺序——**这个顺序就是成片的剪辑顺序**，
 // 由 httpapi 按用户勾选卡片的次序排好，本包原样照做，不重排。
-func (d driver) spillSegments(ctx context.Context, dir string, blobs adapter.BlobReader, segs []adapter.InputRef) ([]string, float64, error) {
-	paths := make([]string, 0, len(segs))
+//
+// 静态图在这里就被转成一小段定长视频，出这个函数时已经和视频段同形。
+// 放在这里而不是放到 concat 里，是为了让后面两轮拼接策略、时长校验、
+// everySegmentHasAudio 都不必知道「图片」这回事——它们看到的永远是视频。
+func (d driver) spillSegments(ctx context.Context, dir string, blobs adapter.BlobReader, segs []adapter.InputRef) ([]spilledSegment, float64, error) {
+	out := make([]spilledSegment, 0, len(segs))
 	var total float64
 
 	for i, seg := range segs {
@@ -231,15 +259,63 @@ func (d driver) spillSegments(ctx context.Context, dir string, blobs adapter.Blo
 		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			return nil, 0, adapter.CallError(domain.TaskErrorInternal, err, "落地第 %d 段失败", i+1)
 		}
-		paths = append(paths, path)
+
+		// 探测失败时用 MIME 兜底判图片：ffprobe 可能整个不在（见 lookProbe），
+		// 那时仍然要认出图片——认不出的代价是成片又变回 0.08 秒。
+		meta, probeErr := d.probe(ctx, path)
+		isStill := meta.StillImage
+		if probeErr != nil {
+			isStill = mimeLooksLikeImage(seg.MIME)
+		}
+
+		if isStill {
+			clip := filepath.Join(dir, fmt.Sprintf("seg-%03d-still.mp4", i))
+			if err := d.stillToClip(ctx, path, clip); err != nil {
+				return nil, 0, adapter.CallError(domain.TaskErrorInternal, err,
+					"第 %d 段是静态图，转成 %g 秒视频失败：%v", i+1, stillSeconds, err)
+			}
+			path = clip
+			// 重新探一遍转出来那段，而不是照抄 stillSeconds 与原图尺寸：
+			// 时长上容器时基取整会让每段差几十毫秒，而 durationTolerance 管的是
+			// **总和**，十二段各差 0.04 秒就顶满 0.5 秒的容差；尺寸上 scale 会把
+			// 奇数宽高抹成偶数，原图的数已经不是成片里的数了。
+			if m, err := d.probe(ctx, clip); err == nil {
+				meta = m
+			} else {
+				meta = videoMeta{Duration: stillSeconds}
+			}
+		}
 
 		// 时长探测失败不阻断拼接：它只用来事后校验拼接是不是真的拼上了，
 		// 探不到就退回"不校验"，总比因为一次 ffprobe 抽风让成片作废好。
-		if m, err := d.probe(ctx, path); err == nil && m.Duration > 0 {
-			total += m.Duration
+		if meta.Duration > 0 {
+			total += meta.Duration
 		}
+		out = append(out, spilledSegment{path: path, meta: meta})
 	}
-	return paths, total, nil
+	return out, total, nil
+}
+
+// stillToClip 把一张静态图转成一段 stillSeconds 长的 mp4。
+//
+// scale 那一步是必须的而不是保险：yuv420p 的色度是 2×2 子采样，libx264 对
+// 奇数宽高直接报 "width not divisible by 2" 退出。用户上传的图什么尺寸都有，
+// 没有这一步，一张 1023×768 的图会让整次合成失败。
+func (d driver) stillToClip(ctx context.Context, src, dst string) error {
+	return d.run(ctx, concatTimeout,
+		"-nostdin", "-loglevel", "error", "-y",
+		"-loop", "1", "-framerate", strconv.Itoa(stillFPS), "-i", src,
+		"-t", strconv.FormatFloat(stillSeconds, 'f', -1, 64),
+		"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+		"-r", strconv.Itoa(stillFPS),
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+		"-movflags", "+faststart",
+		dst)
+}
+
+// mimeLooksLikeImage 是认图片的兜底路径，只在 ffprobe 缺席时用得上。
+func mimeLooksLikeImage(mime string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mime)), "image/")
 }
 
 // segmentExt 猜一个扩展名给临时文件。
@@ -256,6 +332,12 @@ func segmentExt(seg adapter.InputRef) string {
 		return ".webm"
 	case "video/quicktime":
 		return ".mov"
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
 	default:
 		return ".mp4"
 	}
@@ -268,35 +350,47 @@ func segmentExt(seg adapter.InputRef) string {
 // 第一轮走 concat demuxer + `-c copy`：各段来自同一个模型、同一组参数时
 // 编码参数天然一致，这一轮不解码任何一帧，十二段也就几百毫秒。
 //
-// 但 `-c copy` 在参数不一致时**不会报错**——它照样吐出一个文件，只是时间戳
-// 错乱，播放器多半只放得出第一段。因此第一轮之后要拿 ffprobe 量一下成片时长
-// 对不对得上各段之和；对不上就当第一轮没发生过，走第二轮重编码。
-// 只看 ffmpeg 的退出码会让这种静默损坏一路走到用户的下载目录里。
+// 但 `-c copy` 在参数不一致时**不会报错**——它照样吐出一个文件，只是把两种
+// 几何的包塞进同一条轨，播放器多半只放得出第一段。因此零转码只在**确知各段
+// 同形**时才试；探不出来时按老样子试（拿不到证据就不该剥夺这个优化），
+// 试完仍用时长兜一道底。
+//
+// 时长这道底是必要的但**不充分**：`-c copy` 把各段的包原样接上，时长天然
+// 对得起来，两段 320x240 + 640x480 拼出来照样是 4.0 秒——只是后半段解出来
+// 是另一个尺寸。所以真正拦住这种静默损坏的是同形前置判断，时长只管那些
+// 同形却仍然拼坏了的情况。
 //
 // 第二轮用 concat filter 重编码：它先把每段解码成帧再重新编一遍，
-// 分辨率/帧率/像素格式不一致都由 filter 图统一掉。代价是真的要跑编码器，
-// 所以它是回退而不是默认。
-func (d driver) concat(ctx context.Context, dir string, paths []string, out string, wantDuration float64) error {
+// 代价是真的要跑编码器，所以它是回退而不是默认。
+func (d driver) concat(ctx context.Context, dir string, segs []spilledSegment, out string, wantDuration float64) error {
 	list := filepath.Join(dir, "concat.txt")
 	var b strings.Builder
-	for _, p := range paths {
+	for _, s := range segs {
 		// concat 列表的路径要转义单引号。这些路径是本包自己造的（seg-000.mp4），
 		// 不含引号；转义留着是因为"输入永远由我构造"这个前提一旦被改动打破，
 		// 出的就是一条能被摆布的 ffmpeg 指令。
-		b.WriteString("file '" + strings.ReplaceAll(p, "'", `'\''`) + "'\n")
+		b.WriteString("file '" + strings.ReplaceAll(s.path, "'", `'\''`) + "'\n")
 	}
 	if err := os.WriteFile(list, []byte(b.String()), 0o600); err != nil {
 		return adapter.CallError(domain.TaskErrorInternal, err, "写入拼接清单失败")
 	}
 
-	copyErr := d.run(ctx, concatTimeout,
-		"-nostdin", "-loglevel", "error", "-y",
-		"-f", "concat", "-safe", "0", "-i", list,
-		"-c", "copy",
-		"-movflags", "+faststart",
-		out)
-	if copyErr == nil && d.outputLooksWhole(ctx, out, wantDuration) {
-		return nil
+	var copyErr error
+	if sameShape(segs) {
+		copyErr = d.run(ctx, concatTimeout,
+			"-nostdin", "-loglevel", "error", "-y",
+			"-f", "concat", "-safe", "0", "-i", list,
+			"-c", "copy",
+			"-movflags", "+faststart",
+			out)
+		if copyErr == nil && d.outputLooksWhole(ctx, out, wantDuration) {
+			return nil
+		}
+	}
+
+	paths := make([]string, 0, len(segs))
+	for _, s := range segs {
+		paths = append(paths, s.path)
 	}
 
 	args := []string{"-nostdin", "-loglevel", "error", "-y"}
@@ -307,19 +401,9 @@ func (d driver) concat(ctx context.Context, dir string, paths []string, out stri
 	// 而文生视频的产物未必有——因此先探一遍，只要有一段没音轨就整片按无声拼，
 	// 让 filter 图的形状始终自洽（缺一路输入的 concat filter 会直接报错）。
 	audio := d.everySegmentHasAudio(ctx, paths)
-	var fg strings.Builder
-	for i := range paths {
-		fg.WriteString(fmt.Sprintf("[%d:v:0]", i))
-		if audio {
-			fg.WriteString(fmt.Sprintf("[%d:a:0]", i))
-		}
-	}
-	fg.WriteString(fmt.Sprintf("concat=n=%d:v=1:a=%d[v]", len(paths), boolToInt(audio)))
-	if audio {
-		fg.WriteString("[a]")
-	}
+	fg := filterGraph(segs, audio)
 
-	args = append(args, "-filter_complex", fg.String(), "-map", "[v]")
+	args = append(args, "-filter_complex", fg, "-map", "[v]")
 	if audio {
 		args = append(args, "-map", "[a]", "-c:a", "aac", "-b:a", "128k")
 	}
@@ -339,6 +423,87 @@ func (d driver) concat(ctx context.Context, dir string, paths []string, out stri
 		return adapter.CallError(domain.TaskErrorInternal, err, "拼接失败：重编码没能完成（%v）", err)
 	}
 	return nil
+}
+
+// sameShape 报告各段的画幅是不是确知一致——也就是零转码值不值得一试。
+//
+// 只要有一段的尺寸没探出来就返回 true：那时**没有证据**说它们不同形，
+// 而零转码是十二段几百毫秒的优化，不该因为一次 ffprobe 抽风就被剥夺。
+// 拿不准时照旧试一次，后面还有时长那道底。
+func sameShape(segs []spilledSegment) bool {
+	var w, h int
+	for _, s := range segs {
+		if s.meta.Width <= 0 || s.meta.Height <= 0 {
+			return true
+		}
+		if w == 0 {
+			w, h = s.meta.Width, s.meta.Height
+			continue
+		}
+		if s.meta.Width != w || s.meta.Height != h {
+			return false
+		}
+	}
+	return true
+}
+
+// filterGraph 拼出重编码那一轮的 filter 图。
+//
+// 每一路先 scale + pad 到同一个画幅再进 concat：**concat filter 要求各路输入
+// 参数完全一致，不一致直接报错**（"Input link parameters do not match"），
+// 它自己不做任何统一。少了这一步，"分辨率不一致就回退重编码"这条设计
+// 根本走不通——回退过去也只是换个地方失败。
+//
+// 用 scale+pad 而不是直接拉伸：把 16:9 的分镜硬拽成 9:16 会让人物变形，
+// 留黑边至少画面还是对的。setsar=1 是因为 pad 不改像素宽高比，而各段的 SAR
+// 不一致同样会让 concat 报参数不匹配。fps 统一则是让各段时长真的加得起来——
+// 12fps 的段接进 25fps 的图后面时，不归一化会少掉最后一帧的时间。
+func filterGraph(segs []spilledSegment, audio bool) string {
+	w, h := targetShape(segs)
+
+	var fg strings.Builder
+	for i := range segs {
+		if w > 0 && h > 0 {
+			fmt.Fprintf(&fg, "[%d:v:0]scale=%d:%d:force_original_aspect_ratio=decrease,"+
+				"pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=%d[v%d];",
+				i, w, h, w, h, stillFPS, i)
+		}
+	}
+	for i := range segs {
+		if w > 0 && h > 0 {
+			fmt.Fprintf(&fg, "[v%d]", i)
+		} else {
+			fmt.Fprintf(&fg, "[%d:v:0]", i)
+		}
+		if audio {
+			fmt.Fprintf(&fg, "[%d:a:0]", i)
+		}
+	}
+	fmt.Fprintf(&fg, "concat=n=%d:v=1:a=%d[v]", len(segs), boolToInt(audio))
+	if audio {
+		fg.WriteString("[a]")
+	}
+	return fg.String()
+}
+
+// targetShape 选成片的画幅：各段里最大的那个宽和高，抹成偶数。
+//
+// 取最大而不是取第一段，是因为第一段恰好是张缩略图时，整片都会被它拉低到
+// 那个分辨率，后面几段真视频的细节就永久丢了。放大再留黑边只是浪费码率，
+// 缩小丢掉的画面找不回来。抹偶数是 yuv420p 的硬要求（见 stillToClip）。
+//
+// 一个尺寸都没探出来时返回 0，调用方据此退回不做归一化的老图形。
+func targetShape(segs []spilledSegment) (int, int) {
+	var w, h int
+	for _, s := range segs {
+		if s.meta.Width > w {
+			w = s.meta.Width
+		}
+		if s.meta.Height > h {
+			h = s.meta.Height
+		}
+	}
+	return w - w%2, h - h%2
 }
 
 // outputLooksWhole 判断零转码那一轮是不是真的把每一段都拼进去了。
@@ -405,6 +570,8 @@ type videoMeta struct {
 	Height   int
 	Duration float64
 	HasAudio bool
+	// StillImage 表示这个文件是一张静态图而不是一段视频。
+	StillImage bool
 }
 
 func (m videoMeta) width() *int {
@@ -431,7 +598,7 @@ func (m videoMeta) durationMS() *int {
 	return &ms
 }
 
-// probe 用 ffprobe 读宽高、容器时长与有无音轨。
+// probe 用 ffprobe 读宽高、容器时长、有无音轨，以及它到底是不是一张静态图。
 //
 // 时长取 format 而不是 stream：不少编码器不给视频流写 duration，
 // 而 format 那一层几乎总是有的（mp4 里它就是 moov 的 mvhd 时长）。
@@ -445,7 +612,7 @@ func (d driver) probe(ctx context.Context, path string) (videoMeta, error) {
 	var out, stderr bytes.Buffer
 	cmd := exec.CommandContext(cctx, d.ffprobe,
 		"-v", "error",
-		"-show_entries", "stream=codec_type,width,height:format=duration",
+		"-show_entries", "stream=codec_type,width,height:format=duration,format_name",
 		"-of", "json",
 		path,
 	)
@@ -463,6 +630,7 @@ func (d driver) probe(ctx context.Context, path string) (videoMeta, error) {
 		} `json:"streams"`
 		Format struct {
 			Duration string `json:"duration"`
+			Name     string `json:"format_name"`
 		} `json:"format"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
@@ -484,7 +652,26 @@ func (d driver) probe(ctx context.Context, path string) (videoMeta, error) {
 	if secs, err := strconv.ParseFloat(raw.Format.Duration, 64); err == nil && secs > 0 {
 		m.Duration = secs
 	}
+	m.StillImage = m.Width > 0 && isStillImageFormat(raw.Format.Name)
 	return m, nil
+}
+
+// isStillImageFormat 按 ffprobe 报的容器名判断这是不是单张图。
+//
+// 认容器名而不是认扩展名或 MIME：那两样都是调用方给的，一张改名成 .mp4 的
+// png 照样会走进来。ffmpeg 把每种单图格式都拆成独立的 `*_pipe` 解复用器
+// （png_pipe / jpeg_pipe / webp_pipe），image2 是它们的通用序列形态；
+// 视频容器一个都不落在这个命名里（mp4 报的是 "mov,mp4,m4a,3gp,3g2,mj2"）。
+//
+// format_name 可能是逗号分隔的一串候选，逐个看。
+func isStillImageFormat(name string) bool {
+	for _, part := range strings.Split(name, ",") {
+		part = strings.TrimSpace(part)
+		if part == "image2" || strings.HasSuffix(part, "_pipe") {
+			return true
+		}
+	}
+	return false
 }
 
 // run 跑一次 ffmpeg，把 stderr 收进错误里。
