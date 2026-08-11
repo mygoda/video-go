@@ -248,7 +248,19 @@ function ShotAction({
         />
         镜
       </label>
-      <button type="button" className="btn btn-sm" disabled={error !== null || target === shotCount} onClick={apply}>
+      <button
+        type="button"
+        className="btn btn-sm"
+        disabled={error !== null || target === shotCount}
+        title={
+          error !== null
+            ? error
+            : target === shotCount
+              ? '镜头数已经是这么多了。「＋加镜」已经把镜头加好了；要一次改成别的数量，先在「调到」里填数字再点应用'
+              : `把镜头数调整到 ${target}（多退少补）`
+        }
+        onClick={apply}
+      >
         应用
       </button>
 
