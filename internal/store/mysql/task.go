@@ -30,6 +30,7 @@ const taskColumns = `t.id, t.user_id, t.model_id, m.name, m.modality, t.status,
 	t.estimated_cost, t.actual_cost,
 	t.error_code, t.error_message, t.error_field_errors,
 	t.canvas_id, t.card_id, t.client_token,
+	t.step,
 	t.provider_id, t.attempt, t.max_attempts, t.upstream_ref, t.upstream_status_raw,
 	t.created_at, t.started_at, t.finished_at`
 
@@ -50,6 +51,7 @@ func scanTask(s rowScanner) (domain.Task, error) {
 		errorFieldsRaw    []byte
 		canvasID          sql.NullString
 		cardID            sql.NullString
+		step              sql.NullString
 		upstreamRef       sql.NullString
 		upstreamStatusRaw sql.NullString
 		maxAttempts       int
@@ -63,6 +65,7 @@ func scanTask(s rowScanner) (domain.Task, error) {
 		&t.EstimatedCost, &actualCost,
 		&errorCode, &errorMessage, &errorFieldsRaw,
 		&canvasID, &cardID, &t.ClientToken,
+		&step,
 		&t.ProviderID, &t.Attempt, &maxAttempts, &upstreamRef, &upstreamStatusRaw,
 		&t.CreatedAt, &startedAt, &finishedAt,
 	)
@@ -88,6 +91,7 @@ func scanTask(s rowScanner) (domain.Task, error) {
 	t.ActualCost = intPtr(actualCost)
 	t.CanvasID = strPtr(canvasID)
 	t.CardID = strPtr(cardID)
+	t.Step = step.String
 	t.UpstreamRef = strPtr(upstreamRef)
 	t.UpstreamStatusRaw = strPtr(upstreamStatusRaw)
 	t.CreatedAt = t.CreatedAt.UTC()
@@ -150,8 +154,8 @@ func (r *taskRepo) Create(ctx context.Context, t domain.Task) (domain.Task, erro
 
 	const q = `INSERT INTO tasks
 		(id, user_id, model_id, provider_id, canvas_id, card_id, client_token, status,
-		 prompt, params, inputs, estimated_cost, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 step, prompt, params, inputs, estimated_cost, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	createdAt := t.CreatedAt
 	if createdAt.IsZero() {
@@ -161,6 +165,7 @@ func (r *taskRepo) Create(ctx context.Context, t domain.Task) (domain.Task, erro
 	if _, err := r.db.ExecContext(ctx, q,
 		t.ID, t.UserID, t.ModelID, t.ProviderID,
 		nullString(t.CanvasID), nullString(t.CardID), t.ClientToken, t.Status,
+		nullStringNonEmpty(t.Step),
 		nullStringNonEmpty(t.Prompt), params, inputs, t.EstimatedCost, createdAt.UTC()); err != nil {
 		if isDup(err) {
 			return domain.Task{}, conflict("client_token "+t.ClientToken+" already used by this user", err)

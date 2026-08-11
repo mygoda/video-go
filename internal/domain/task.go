@@ -130,7 +130,17 @@ type Task struct {
 	ClientToken string `json:"client_token,omitempty"`
 
 	// 以下是排障与执行用的内部字段，只在 admin 视图下发。
-	ProviderID        string  `json:"provider_id,omitempty"`
+	ProviderID string `json:"provider_id,omitempty"`
+
+	// Step 记录这一行是画布哪条同步链路落的（"script" / "storyboard" /
+	// "refine"，历史行为 "legacy"）。空串表示走 executor 的普通任务。
+	//
+	// 它是**来源**，不是状态：那三条链路在 HTTP handler 里同步打完上游、把
+	// 产物写进 canvas_cards 就地置终态，executor 从头到尾没碰过这一行。因此
+	// 把它打回 queued 只会让 worker 花真钱重打一次上游，产物却落成一个孤儿
+	// text 资产——画布上那张卡不会有任何变化。管理端的重试据此拒绝这些行。
+	Step string `json:"step,omitempty"`
+
 	Attempt           int     `json:"attempt,omitempty"`
 	UpstreamRef       *string `json:"upstream_ref,omitempty"`
 	UpstreamStatusRaw *string `json:"upstream_status_raw,omitempty"`

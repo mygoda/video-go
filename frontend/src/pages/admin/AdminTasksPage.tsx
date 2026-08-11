@@ -273,6 +273,11 @@ function TaskRow({
   const retryable = task.status === 'failed' || task.status === 'canceled';
   const cancelable = task.status === 'queued' || task.status === 'running';
 
+  // 画布对话类任务（step 非空）是 handler 同步跑完的，产物落在画布卡片上，
+  // 后端的重试接口对它们返回 409。这里置灰而不是把按钮藏掉：藏起来只会让人
+  // 以为这一行的按钮没渲染出来，置灰配上 title 才答得出"为什么这条不能重试"。
+  const canvasChat = Boolean(task.step);
+
   return (
     <tr>
       <td className="strong">
@@ -305,7 +310,13 @@ function TaskRow({
       <td>
         <div className="row-actions">
           {retryable && (
-            <button type="button" className="btn btn-sm" onClick={onRetry} disabled={busy}>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={onRetry}
+              disabled={busy || canvasChat}
+              title={canvasChat ? '画布对话类任务不支持重试，请在画布上重新发起' : undefined}
+            >
               重试
             </button>
           )}

@@ -55,7 +55,9 @@ import (
 
 // chatCall 描述一次要计费的同步 chat 调用。
 //
-// step 只用于日志与任务标识（"script" / "refine" / "storyboard"）；
+// step 是这次调用属于哪一步（"script" / "refine" / "storyboard"）。它进日志、
+// 进上游的任务标识，也**落进 tasks.step**——管理端的重试靠它认出"这一行不是
+// executor 执行的"，见 handleAdminRetryTask；
 // projectID / cardID 落进 tasks 的 canvas_id / card_id，账单因此答得出
 // "这笔钱是哪张画布、哪张卡花的"。
 type chatCall struct {
@@ -119,6 +121,11 @@ func (s *server) holdChat(ctx context.Context, call chatCall, model domain.Model
 		ProviderID:    model.ProviderID,
 		Status:        domain.TaskStatusRunning,
 		Prompt:        call.userInput, // 不是 call.prompt，理由见 chatCall 的字段注释
+
+		// Step 让这一行认得出自己的来源。管理端的重试据此拒绝它：这条链路
+		// 的产物落点是画布卡片，把行打回 queued 只会让 worker 重打一次上游、
+		// 花第二份钱，而产物落成一个孤儿 text 资产（见 handleAdminRetryTask）。
+		Step: call.step,
 
 		Params:        params,
 		EstimatedCost: cost,
