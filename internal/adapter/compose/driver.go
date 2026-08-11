@@ -59,6 +59,43 @@ const SlotSegments = string(domain.LineageComposedFrom)
 // （video/mp4 归到 video），前端据此挂 <video> 而不是别的什么。
 const OutputMIME = "video/mp4"
 
+// ParamMute 是「成片不要音轨」的参数 key。
+//
+// 人声本身是出片那一步的事（台词进不进 prompt，见 domain.ShotParams.Voice），
+// 这里管的是**已经出好的片子**：想静音不必花钱重出十二镜，合成时 `-an`
+// 把音轨去掉即可。
+const ParamMute = "mute"
+
+// ParamSubtitleSRT 是字幕正文的参数 key，取值是一整份 SRT。
+//
+// # 为什么字幕是「传进来的文本」而不是驱动自己转写出来的
+//
+// 台词本来就是用户在镜头卡里一个字一个字写的（domain.ShotParams.Dialogue）。
+// 对成片做语音转写去"认"回这些字，只会引入转写误差——手上有原文还去猜，
+// 是把一件零误差的事做成有误差的事。所以时间轴与文本都由 httpapi 那一层按
+// 卡片顺序算好，本包只负责把它挂成一条轨。
+//
+// # 为什么它是 params 里的一个声明字段
+//
+// 驱动能收到的东西只有 SubmitInput 那几样：prompt 是成片标题，inputs 是片段
+// 的存储键，字幕文本两头都不属于。走 params 就得在 capability 里声明它
+// （见 000018 迁移），否则 Validator 会以未知 key 拒掉整次提交——而这正是
+// 想要的：这条链路上每一个流进 ffmpeg 的值都在 L1 有据可查。
+const ParamSubtitleSRT = "subtitle_srt"
+
+// SubtitleCodec 是字幕轨的编码器。
+//
+// # 为什么是软字幕轨而不是烧进画面
+//
+// 硬烧字幕要 `subtitles` 或 `drawtext` 滤镜，这两个滤镜分别依赖 libass 与
+// libfreetype。本机的 ffmpeg（Homebrew 8.1.1）configure 里两个都没有，
+// `-filters` 里根本列不出它们——硬烧在当前环境不是"效果差一点"，是跑不起来。
+// 而 mov_text 是 mp4 的原生字幕轨，编码器就在，今天就能走通。
+//
+// 软字幕另有两个不因环境而改变的好处：用户可以关掉，以及成片里的字仍然是
+// 文本、能被检索与再编辑。真要烧进画面是一次 ffmpeg 构建替换，那是另一件事。
+const SubtitleCodec = "mov_text"
+
 // concatTimeout 是一次拼接的时间上限。
 //
 // `-c copy` 的路径是纯 IO，十几段也是秒级；真走到重编码时，一段 4 秒 480p
@@ -195,8 +232,13 @@ func (d driver) Invoke(ctx context.Context, in adapter.SubmitInput) (adapter.Sub
 		return adapter.SubmitResult{}, err
 	}
 
+	opts, err := spillOptions(work, in.Params)
+	if err != nil {
+		return adapter.SubmitResult{}, err
+	}
+
 	out := filepath.Join(work, "output.mp4")
-	if err := d.concat(ctx, work, spilled, out, wantDuration); err != nil {
+	if err := d.concat(ctx, work, spilled, out, wantDuration, opts); err != nil {
 		return adapter.SubmitResult{}, err
 	}
 
@@ -228,6 +270,38 @@ func (d driver) Invoke(ctx context.Context, in adapter.SubmitInput) (adapter.Sub
 type spilledSegment struct {
 	path string
 	meta videoMeta
+}
+
+// composeOptions 是这次合成里由用户决定的两件事：要不要音轨、要不要字幕轨。
+//
+// subtitlePath 为空表示不挂字幕；它是一个已经落好盘的 .srt 路径，而不是正文——
+// ffmpeg 只吃文件，把落盘这一步放在这里，下面拼参数那一段就不必再关心 IO。
+type composeOptions struct {
+	mute         bool
+	subtitlePath string
+}
+
+// spillOptions 把 params 里的两个开关读出来，并把字幕正文落成一个 .srt。
+//
+// 类型不对就当没传而不是报错：这两个 key 由 capability 声明、Validator 已经
+// 在提交那一刻把类型校验过一遍（toggle 必须是布尔、textarea 必须是文本），
+// 走到驱动里还不对只可能是有人绕过 httpapi 直接塞了任务行。那时候拒绝合成
+// 帮不了任何人——用户要的是片子，而这两个开关都有一个安全的缺省：有声、无字幕。
+func spillOptions(dir string, params map[string]any) (composeOptions, error) {
+	var opts composeOptions
+	if mute, ok := params[ParamMute].(bool); ok {
+		opts.mute = mute
+	}
+	srt, _ := params[ParamSubtitleSRT].(string)
+	if strings.TrimSpace(srt) == "" {
+		return opts, nil
+	}
+	path := filepath.Join(dir, "subtitles.srt")
+	if err := os.WriteFile(path, []byte(srt), 0o600); err != nil {
+		return composeOptions{}, adapter.CallError(domain.TaskErrorInternal, err, "写入字幕文件失败")
+	}
+	opts.subtitlePath = path
+	return opts, nil
 }
 
 // spillSegments 把每段的字节落到工作目录，顺带累计期望总时长。
@@ -362,7 +436,14 @@ func segmentExt(seg adapter.InputRef) string {
 //
 // 第二轮用 concat filter 重编码：它先把每段解码成帧再重新编一遍，
 // 代价是真的要跑编码器，所以它是回退而不是默认。
-func (d driver) concat(ctx context.Context, dir string, segs []spilledSegment, out string, wantDuration float64) error {
+//
+// # 静音与字幕都不把第一轮挤掉
+//
+// `-an` 是丢一条轨，`-c:s mov_text` 是往容器里多写一条文本轨——两件事都发生在
+// 容器层，视频包一个字节都不用重编。所以它们与 `-c copy` 共存，**开了字幕
+// 不等于要重编码**。这一点必须是刻意的：把静音实现成"重编码时不接音频"
+// 会让每一次静音合成都白跑一遍 libx264，十二段就是分钟级的等待。
+func (d driver) concat(ctx context.Context, dir string, segs []spilledSegment, out string, wantDuration float64, opts composeOptions) error {
 	list := filepath.Join(dir, "concat.txt")
 	var b strings.Builder
 	for _, s := range segs {
@@ -377,12 +458,7 @@ func (d driver) concat(ctx context.Context, dir string, segs []spilledSegment, o
 
 	var copyErr error
 	if sameShape(segs) {
-		copyErr = d.run(ctx, concatTimeout,
-			"-nostdin", "-loglevel", "error", "-y",
-			"-f", "concat", "-safe", "0", "-i", list,
-			"-c", "copy",
-			"-movflags", "+faststart",
-			out)
+		copyErr = d.run(ctx, concatTimeout, copyArgs(list, out, opts)...)
 		if copyErr == nil && d.outputLooksWhole(ctx, out, wantDuration) {
 			return nil
 		}
@@ -400,12 +476,23 @@ func (d driver) concat(ctx context.Context, dir string, segs []spilledSegment, o
 	// 每段都取 v:0 与 a:0 送进 concat filter。a=1 要求每段都有音轨，
 	// 而文生视频的产物未必有——因此先探一遍，只要有一段没音轨就整片按无声拼，
 	// 让 filter 图的形状始终自洽（缺一路输入的 concat filter 会直接报错）。
-	audio := d.everySegmentHasAudio(ctx, paths)
+	// 用户要静音时连探都不必探：结论已经是"无声"。
+	audio := !opts.mute && d.everySegmentHasAudio(ctx, paths)
 	fg := filterGraph(segs, audio)
+
+	// 字幕作为最后一个输入接进来，序号排在所有片段之后——filter 图按下标引用
+	// 各段（`[3:v:0]`），插在前面会把每一路都错位到别的文件上。
+	subtitleIndex := len(paths)
+	if opts.subtitlePath != "" {
+		args = append(args, "-i", opts.subtitlePath)
+	}
 
 	args = append(args, "-filter_complex", fg, "-map", "[v]")
 	if audio {
 		args = append(args, "-map", "[a]", "-c:a", "aac", "-b:a", "128k")
+	}
+	if opts.subtitlePath != "" {
+		args = append(args, "-map", strconv.Itoa(subtitleIndex)+":s:0", "-c:s", SubtitleCodec)
 	}
 	args = append(args,
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
@@ -423,6 +510,39 @@ func (d driver) concat(ctx context.Context, dir string, segs []spilledSegment, o
 		return adapter.CallError(domain.TaskErrorInternal, err, "拼接失败：重编码没能完成（%v）", err)
 	}
 	return nil
+}
+
+// copyArgs 拼出零转码那一轮的 ffmpeg 参数。
+//
+// 两个开关都不开时，这里吐出来的参数与加开关之前**逐字相同**——没有 `-map`，
+// 让 ffmpeg 按默认挑流。刻意如此：默认挑流这条路是验证过的（成片的包序列与
+// 源逐个相等），而 `-map` 一旦写出来就得把每一路都写对，多写少写都是在一条
+// 已经跑通的路上重新开一个出错的机会。
+//
+// 挂字幕时就必须显式映射了：第二个输入一进来，ffmpeg 的默认挑流规则会在两个
+// 输入之间各挑一条"最好的"，片段那一路的音轨反而会被丢掉。
+func copyArgs(list, out string, opts composeOptions) []string {
+	args := []string{
+		"-nostdin", "-loglevel", "error", "-y",
+		"-f", "concat", "-safe", "0", "-i", list,
+	}
+	if opts.subtitlePath != "" {
+		args = append(args, "-i", opts.subtitlePath)
+	}
+	args = append(args, "-c", "copy")
+	if opts.subtitlePath != "" {
+		args = append(args, "-map", "0:v:0")
+		if !opts.mute {
+			// `?` 是"有就映射，没有就算了"：文生视频的产物未必带音轨，
+			// 而这一路写死会让所有无声片段的合成直接报 "matches no streams"。
+			args = append(args, "-map", "0:a?")
+		}
+		args = append(args, "-map", "1:s:0", "-c:s", SubtitleCodec)
+	}
+	if opts.mute {
+		args = append(args, "-an")
+	}
+	return append(args, "-movflags", "+faststart", out)
 }
 
 // sameShape 报告各段的画幅是不是确知一致——也就是零转码值不值得一试。

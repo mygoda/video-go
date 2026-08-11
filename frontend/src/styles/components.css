@@ -630,6 +630,12 @@ a { color: inherit; text-decoration: none; }
 }
 .compose-picks li.not-ready { color: var(--text-tertiary); }
 .compose-picks li.not-ready em { color: var(--warning); font-style: normal; }
+/* 两个开关是真控件，得跟着 .compose-head 一起把指针要回来（父级让出去了） */
+.compose-options {
+  pointer-events: auto;
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3);
+}
+.compose-options .hint { flex-basis: 100%; }
 
 /* =============================================================================
    资产库 / 个人中心 / 登录

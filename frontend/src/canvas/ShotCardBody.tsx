@@ -44,7 +44,16 @@ export function ShotCardBody({ card, k, firstFramePending, renderPending }: Shot
       />
       {meta && <div className="shot-meta mono">{meta}</div>}
       <p className="shot-desc">{shot.description || '（还没有镜头描述，双击编辑）'}</p>
-      {shot.dialogue && <p className="shot-dialogue">「{shot.dialogue}」</p>}
+      {shot.dialogue && (
+        <p className="shot-dialogue">
+          {shot.voice === false && (
+            <span className="mono" title="这一镜的台词不会进出片 prompt，成片只有环境音">
+              🔇{' '}
+            </span>
+          )}
+          「{shot.dialogue}」
+        </p>
+      )}
     </div>
   );
 }
@@ -212,6 +221,27 @@ export function ShotEditor({ card, onSave, onCancel }: ShotEditorProps) {
         value={draft.dialogue}
         onChange={(e) => set('dialogue', e.target.value)}
       />
+
+      {/*
+        三个选项而不是一个勾选框：「跟随默认」是一个真实且不同的状态，
+        表示这一镜还没人单独表过态、流程条上那个全局开关说了算。做成勾选框
+        就只剩开与关，用户一旦碰过任何一镜，那一镜就永远脱离全局开关，
+        而他并不知道自己做了这个决定。
+      */}
+      <label className="card-editor-label" htmlFor={id('voice')}>
+        人声
+      </label>
+      <select
+        id={id('voice')}
+        className="input"
+        value={draft.voice === null ? 'default' : draft.voice ? 'on' : 'off'}
+        onChange={(e) => set('voice', e.target.value === 'default' ? null : e.target.value === 'on')}
+      >
+        <option value="default">跟随默认</option>
+        <option value="on">念出来</option>
+        <option value="off">不念（只留环境音）</option>
+      </select>
+      <span className="hint">改这个要重出这一镜才生效；台词本身照旧留着，字幕仍然取它</span>
 
       <div className="card-editor-actions">
         <span className="hint">⌘/Ctrl+Enter 保存</span>

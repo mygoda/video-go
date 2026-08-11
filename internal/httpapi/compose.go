@@ -86,6 +86,11 @@ func (s *server) handleCanvasCompose(w http.ResponseWriter, r *http.Request) {
 		CardIDs     []string `json:"card_ids"`
 		Title       string   `json:"title"`
 		ClientToken string   `json:"client_token"`
+		// Mute 去掉成片的音轨。人声本身是出片那一步决定的（台词进不进
+		// prompt），这里是给已经出好的片子一条不必重出的静音路径。
+		Mute bool `json:"mute"`
+		// Subtitles 决定要不要挂一条软字幕轨，正文取各镜的台词字段。
+		Subtitles bool `json:"subtitles"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, r, err)
@@ -119,7 +124,14 @@ func (s *server) handleCanvasCompose(w http.ResponseWriter, r *http.Request) {
 	}
 	// 卡片属于本项目、项目属于本人，但资产是另一张表——卡片上那个 asset_id
 	// 是客户端写进来的，不校验归属就等于"改一下卡片就能把别人的产物拼进来"。
-	if err := s.assertOwnsAssets(ctx, id.UserID, assetIDs); err != nil {
+	assets, err := s.ownedAssets(ctx, id.UserID, assetIDs)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	params, err := composeParams(req.Mute, req.Subtitles, snap.Cards, req.CardIDs, assets)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -136,13 +148,13 @@ func (s *server) handleCanvasCompose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inputs := map[string][]string{compose.SlotSegments: assetIDs}
-	sub := capability.Submission{ModelID: model.ID, Prompt: req.Title, Inputs: inputs}
+	sub := capability.Submission{ModelID: model.ID, Prompt: req.Title, Inputs: inputs, Params: params}
 	if fields := s.deps.Validator.Validate(schema, sub); len(fields) > 0 {
 		writeError(w, r, errFields(fields, "参数校验未通过"))
 		return
 	}
 
-	cost, err := s.deps.Pricer.Estimate(schema.Pricing, capability.EvalContext{Inputs: inputs})
+	cost, err := s.deps.Pricer.Estimate(schema.Pricing, capability.EvalContext{Params: params, Inputs: inputs})
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -165,6 +177,7 @@ func (s *server) handleCanvasCompose(w http.ResponseWriter, r *http.Request) {
 		ProviderID:    model.ProviderID,
 		Status:        domain.TaskStatusQueued,
 		Prompt:        req.Title,
+		Params:        params,
 		Inputs:        inputs,
 		EstimatedCost: cost,
 		CanvasID:      &canvasID,
@@ -245,28 +258,108 @@ func composeSegments(cards []domain.Card, ids []string) ([]string, error) {
 	return out, nil
 }
 
-// assertOwnsAssets 校验每件参与合成的资产都属于调用方。
+// assertOwnsAssets 校验每件参与合成的资产都属于调用方，并把它们按序返回。
 //
 // 与 assertInputRefs 同理：不查这一步，猜到（或从别处抄到）一个 asset_id
 // 写进卡片就能把别人的产物拼进自己的成片。找不到与不属于本人回同一句话，
 // 不泄露"这个 id 存在但不是你的"。
-func (s *server) assertOwnsAssets(ctx context.Context, userID string, assetIDs []string) error {
+//
+// 顺带把资产本身交出来，是因为字幕的时间轴要按各段的 duration_ms 累加，
+// 而这里已经逐件取过一遍了——为同一批 id 再查一轮库只是让合成多几个来回。
+func (s *server) ownedAssets(ctx context.Context, userID string, assetIDs []string) ([]domain.Asset, error) {
+	out := make([]domain.Asset, 0, len(assetIDs))
 	for _, assetID := range assetIDs {
 		a, err := s.deps.Assets.Get(ctx, assetID)
 		if err != nil {
 			var de *domain.Error
 			if errors.As(err, &de) && de.Code == domain.CodeNotFound {
-				return errFields([]domain.FieldError{
+				return nil, errFields([]domain.FieldError{
 					{Key: "card_ids", Message: "产物 " + assetID + " 不存在或已删除"},
 				}, "参数校验未通过")
 			}
-			return err
+			return nil, err
 		}
 		if a.UserID != userID {
-			return errFields([]domain.FieldError{
+			return nil, errFields([]domain.FieldError{
 				{Key: "card_ids", Message: "产物 " + assetID + " 不存在或已删除"},
 			}, "参数校验未通过")
 		}
+		out = append(out, a)
 	}
-	return nil
+	return out, nil
+}
+
+// composeParams 把两个开关翻译成 compose driver 认得的 params。
+//
+// **两个键一律都写，哪怕都是默认值。** 校验器要求目录里声明过、且当前可见的
+// 每一个参数都出现在提交里（validateParams 的 !present 分支），少一个就是
+// 400「…为必填」。省掉默认值看着干净，代价是「什么都不选的合成」根本提不上去。
+func composeParams(mute, subtitles bool, cards []domain.Card, cardIDs []string, assets []domain.Asset) (map[string]any, error) {
+	srt := ""
+	if subtitles {
+		// 一段台词都没写时留空串：一条没有任何条目的字幕轨在播放器的字幕
+		// 菜单里照样占一项，用户点开发现全程没字，只会以为字幕功能坏了。
+		s, err := composeSubtitles(cards, cardIDs, assets)
+		if err != nil {
+			return nil, err
+		}
+		srt = s
+	}
+	return map[string]any{
+		compose.ParamMute:        mute,
+		compose.ParamSubtitleSRT: srt,
+	}, nil
+}
+
+// composeSubtitles 按片段顺序生成整片的 SRT。
+//
+// 文本逐字取镜头卡的 params.dialogue，**不做任何语音转写**：台词是用户自己
+// 写的，手上有原文还去转写只会引入误差。非镜头卡（用户随手拼进来的图片卡、
+// 视频卡）没有台词字段，它们照样占时间轴，只是不出字。
+//
+// 时长取资产的 duration_ms，与 driver 落盘后探到的时长同源。图片资产在库里
+// 没有时长——那一段的长度是 driver 现给的，所以这里必须取同一个常量。
+// 视频资产缺时长则直接报错：那种情况下算出来的时间轴从这一段起全是错的，
+// 而一条整体偏移的字幕比没有字幕更难被发现。
+func composeSubtitles(cards []domain.Card, cardIDs []string, assets []domain.Asset) (string, error) {
+	byID := make(map[string]domain.Card, len(cards))
+	for _, c := range cards {
+		byID[c.ID] = c
+	}
+
+	cues := make([]compose.Cue, 0, len(cardIDs))
+	for i, cardID := range cardIDs {
+		card := byID[cardID]
+
+		var dialogue string
+		if card.Kind == domain.CardKindShot {
+			// params 是这张卡自己的既有内容，能落库就一定解得开；真解不开时
+			// 这一镜按无台词处理，不该因此把整次合成拒掉。
+			if sp, err := domain.ParseShotParams(card.Params); err == nil {
+				dialogue = sp.Dialogue
+			}
+		}
+
+		ms, err := segmentDurationMS(assets[i])
+		if err != nil {
+			return "", err
+		}
+		cues = append(cues, compose.Cue{Text: dialogue, DurationMS: ms})
+	}
+	return compose.SRT(cues), nil
+}
+
+// segmentDurationMS 报告一件资产在成片里占多少毫秒。
+func segmentDurationMS(a domain.Asset) (int, error) {
+	if a.DurationMS != nil && *a.DurationMS > 0 {
+		return *a.DurationMS, nil
+	}
+	if a.Type == domain.AssetTypeImage {
+		return compose.StillSegmentMS, nil
+	}
+	return 0, errFields([]domain.FieldError{{
+		Key: "subtitles",
+		Message: "产物 " + a.ID + " 没有记录时长，字幕的时间轴会从它开始整体错位；" +
+			"先重出这一段，或者这次先不加字幕",
+	}}, "参数校验未通过")
 }

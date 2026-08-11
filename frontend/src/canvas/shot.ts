@@ -20,6 +20,14 @@ function asNumber(value: JsonValue | undefined, fallback: number): number {
 }
 
 /**
+ * 人声开关的三态：只有明确的 true / false 才算表过态，其余（缺键、null、
+ * 存量卡里塞的别的东西）一律当作「还没人动过」，跟随全局默认。
+ */
+function asTriState(value: JsonValue | undefined): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+/**
  * 读出一张 shot 卡的结构化字段。
  *
  * 缺字段兜底而不是报错：镜头卡允许先建出来再填（分镜那一步会分批回写），
@@ -31,6 +39,7 @@ export function readShot(card: CanvasCard): ShotParams {
     shot_no: Math.max(1, Math.round(asNumber(params.shot_no, 1))),
     description: asText(params.description),
     dialogue: asText(params.dialogue),
+    voice: asTriState(params.voice),
     duration_sec: Math.max(0, asNumber(params.duration_sec, 0)),
     camera: asText(params.camera),
     shot_size: asText(params.shot_size),
@@ -48,6 +57,7 @@ export function shotParams(shot: ShotParams): Record<string, JsonValue> {
     shot_no: shot.shot_no,
     description: shot.description,
     dialogue: shot.dialogue,
+    voice: shot.voice,
     duration_sec: shot.duration_sec,
     camera: shot.camera,
     shot_size: shot.shot_size,

@@ -122,6 +122,17 @@ type ShotParams struct {
 	Description string `json:"description"`
 	// Dialogue 是这一镜的台词，可以为空（空镜、纯环境音）。
 	Dialogue string `json:"dialogue"`
+	// Voice 决定这一镜的台词进不进出片 prompt：true 进（成片带同步人声），
+	// false 不进（成片只有环境音），nil 表示这一镜没表过态、跟随全局默认。
+	//
+	// 三态而不是布尔，是因为这个字段是后加的：布尔的零值是 false，而存量镜头卡
+	// 的 params 里根本没有这个 key，解出来就是「关」——一次发版把所有已经写好
+	// 台词的分镜静音，且用户在界面上看不出是谁把它关的。nil 是「还没人动过它」，
+	// 与「有人明确关掉了」是两件不同的事，必须分得开。
+	//
+	// 关掉只是不把台词拼进 prompt。已经出好的片子要事后静音，是合成那一步的
+	// `-an`（见 compose driver），不必花钱重出。
+	Voice *bool `json:"voice"`
 	// DurationSec 是镜头时长（秒）。0 表示还没定，由出片那一步取模型默认值。
 	DurationSec float64 `json:"duration_sec"`
 	// Camera 是机位 / 运镜，如「手持跟拍」「固定」。自由文本：上游吃的是
@@ -140,7 +151,7 @@ type ShotParams struct {
 
 // shotParamKeys 是 ShotParams 全部合法的 JSON key，用于拒绝未知字段。
 var shotParamKeys = map[string]struct{}{
-	"shot_no": {}, "description": {}, "dialogue": {},
+	"shot_no": {}, "description": {}, "dialogue": {}, "voice": {},
 	"duration_sec": {}, "camera": {}, "shot_size": {},
 	"first_frame_asset_id": {},
 }
