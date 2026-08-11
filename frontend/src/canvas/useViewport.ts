@@ -66,7 +66,9 @@ export function useViewport(projectId: string, node: HTMLElement | null) {
     const pad = 80;
     const w = Math.max(bounds.maxX - bounds.minX, 1);
     const h = Math.max(bounds.maxY - bounds.minY, 1);
-    const k = clampK(Math.min((rect.width - pad * 2) / w, (rect.height - pad * 2) / h));
+    // 只缩小以容纳内容，绝不放大：内容比视口小时就停在 100%。否则「适应」一张
+    // 小卡片会把它怼到 2~3 倍，既晃眼又把周围别的卡片顶出视野。
+    const k = clampK(Math.min(1, (rect.width - pad * 2) / w, (rect.height - pad * 2) / h));
     setViewport({
       k,
       x: rect.width / 2 - ((bounds.minX + bounds.maxX) / 2) * k,

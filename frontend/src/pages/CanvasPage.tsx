@@ -525,6 +525,10 @@ export function CanvasPage() {
       await flush();
       await api.storyboard(projectId, flowScript.id, count);
       await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+      // 拆完镜头把视野拉到全部内容：新镜头排在剧本下方，不 fit 的话它们全在屏外，
+      // 流程条明明说「已拆 N 镜」，画布却一动不动，看起来像没生效。
+      const fresh = qc.getQueryData<CanvasState>(qk.canvas(projectId))?.cards ?? cards;
+      fit(bounds(fresh));
     } catch (err) {
       toast(err instanceof ApiError ? err.message : '拆分镜失败，请稍后重试', 'danger');
     } finally {
