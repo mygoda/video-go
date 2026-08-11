@@ -26,6 +26,8 @@ interface ConversationDockProps {
    */
   rootRef(node: HTMLElement | null): void;
   onRemoveRef(cardId: string): void;
+  /** 剧本已落到画布后回调：让画布把视野对到新卡上，否则它落在 (0,0) 常滚出屏幕外 */
+  onGenerated?(): void;
 }
 
 /** 对话与画布同屏：产出落到画布这件事，看不见就等于没发生 */
@@ -37,6 +39,7 @@ export function ConversationDock({
   onCollapsedChange,
   rootRef,
   onRemoveRef,
+  onGenerated,
 }: ConversationDockProps) {
   const [text, setText] = useState('');
   const [skillId, setSkillId] = useState<string | null>(null);
@@ -85,6 +88,7 @@ export function ConversationDock({
       await api.canvasChat(projectId, value, refCards.map((c) => c.id), skillId, modelId);
       setText('');
       await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+      onGenerated?.();
     } catch (err) {
       toast(err instanceof ApiError ? err.message : '发送失败，请稍后重试', 'danger');
     } finally {
