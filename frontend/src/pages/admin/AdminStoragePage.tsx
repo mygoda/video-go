@@ -4,6 +4,7 @@ import { ApiError } from '@/api/client';
 import { adminApi } from '@/api/endpoints';
 import { qk, useAdminStorage } from '@/api/queries';
 import type { CleanupResult, CleanupTarget } from '@/api/types';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { formatBytes } from '@/components/admin/format';
 import { toast } from '@/stores/toast';
 
@@ -24,6 +25,7 @@ export function AdminStoragePage() {
   const [target, setTarget] = useState<CleanupTarget>('orphan_files');
   const [days, setDays] = useState(30);
   const [preview, setPreview] = useState<CleanupResult | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   const cleanup = useMutation({
     mutationFn: (dry_run: boolean) =>
@@ -31,6 +33,7 @@ export function AdminStoragePage() {
     onSuccess: (result) => {
       setPreview(result);
       if (!result.dry_run) {
+        setConfirming(false);
         void qc.invalidateQueries({ queryKey: qk.adminStorage });
         toast(`已回收 ${formatBytes(result.reclaimed_bytes)}`);
       }
@@ -139,11 +142,7 @@ export function AdminStoragePage() {
               type="button"
               className="btn btn-primary"
               disabled={cleanup.isPending || !preview?.dry_run || preview.candidate_count === 0}
-              onClick={() => {
-                if (window.confirm(`确认清理 ${preview?.candidate_count} 项？该操作不可撤销。`)) {
-                  cleanup.mutate(false);
-                }
-              }}
+              onClick={() => setConfirming(true)}
             >
               执行清理
             </button>
@@ -170,6 +169,19 @@ export function AdminStoragePage() {
           )}
         </div>
       </div>
+
+      {confirming && preview && (
+        <ConfirmDialog
+          title="执行清理"
+          body={`确认清理 ${preview.candidate_count} 项？该操作不可撤销。`}
+          confirmLabel="执行清理"
+          busyLabel="清理中…"
+          danger
+          busy={cleanup.isPending}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => cleanup.mutate(false)}
+        />
+      )}
     </>
   );
 }

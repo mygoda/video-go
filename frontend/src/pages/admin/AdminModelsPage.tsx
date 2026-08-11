@@ -6,6 +6,7 @@ import { invalidateModelCatalog, qk, useAdminModels, useAdminProviders } from '@
 import type { ModelConfig, ModelConfigUpsert, ProbeResult, Provider, ProviderUpsert } from '@/api/types';
 import { ModelSheet } from '@/components/admin/ModelSheet';
 import { ProviderSheet } from '@/components/admin/ProviderSheet';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { formatRelative } from '@/components/admin/format';
 import { toast } from '@/stores/toast';
 
@@ -30,6 +31,8 @@ export function AdminModelsPage() {
   const [providerEditing, setProviderEditing] = useState<ProviderEditing | null>(null);
   const [modelEditing, setModelEditing] = useState<ModelEditing | null>(null);
   const [probe, setProbe] = useState<ProbeResult | null>(null);
+  const [providerRemoving, setProviderRemoving] = useState<Provider | null>(null);
+  const [modelRemoving, setModelRemoving] = useState<ModelConfig | null>(null);
 
   const saveProvider = useMutation({
     mutationFn: (payload: ProviderUpsert) =>
@@ -48,6 +51,7 @@ export function AdminModelsPage() {
     mutationFn: (id: string) => adminApi.deleteProvider(id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.adminProviders });
+      setProviderRemoving(null);
       toast('供应商已删除');
     },
     onError: (err) => toast(errorText(err), 'danger'),
@@ -72,6 +76,7 @@ export function AdminModelsPage() {
     mutationFn: (id: string) => adminApi.deleteModel(id),
     onSuccess: () => {
       invalidateModelCatalog(qc);
+      setModelRemoving(null);
       toast('模型已删除');
     },
     onError: (err) => toast(errorText(err), 'danger'),
@@ -159,11 +164,7 @@ export function AdminModelsPage() {
                       <button
                         type="button"
                         className="btn btn-sm btn-ghost"
-                        onClick={() => {
-                          if (window.confirm(`删除模型「${m.capability.name}」？生成器里会立刻消失。`)) {
-                            removeModel.mutate(m.id);
-                          }
-                        }}
+                        onClick={() => setModelRemoving(m)}
                       >
                         删除
                       </button>
@@ -245,9 +246,7 @@ export function AdminModelsPage() {
                       <button
                         type="button"
                         className="btn btn-sm btn-ghost"
-                        onClick={() => {
-                          if (window.confirm(`删除供应商「${p.name}」？`)) removeProvider.mutate(p.id);
-                        }}
+                        onClick={() => setProviderRemoving(p)}
                       >
                         删除
                       </button>
@@ -291,6 +290,32 @@ export function AdminModelsPage() {
             setProbe(null);
           }}
           onSubmit={(payload) => saveModel.mutate(payload)}
+        />
+      )}
+
+      {modelRemoving && (
+        <ConfirmDialog
+          title="删除模型"
+          body={`删除模型「${modelRemoving.capability.name}」？生成器里会立刻消失。`}
+          confirmLabel="删除"
+          busyLabel="删除中…"
+          danger
+          busy={removeModel.isPending}
+          onCancel={() => setModelRemoving(null)}
+          onConfirm={() => removeModel.mutate(modelRemoving.id)}
+        />
+      )}
+
+      {providerRemoving && (
+        <ConfirmDialog
+          title="删除供应商"
+          body={`删除供应商「${providerRemoving.name}」？`}
+          confirmLabel="删除"
+          busyLabel="删除中…"
+          danger
+          busy={removeProvider.isPending}
+          onCancel={() => setProviderRemoving(null)}
+          onConfirm={() => removeProvider.mutate(providerRemoving.id)}
         />
       )}
     </>

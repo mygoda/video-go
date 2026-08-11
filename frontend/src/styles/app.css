@@ -180,8 +180,16 @@
   animation: dialog-in var(--dur-slow) var(--ease-out);
 }
 .dialog h2 { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-semi); }
+.dialog-body { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.6; overflow-wrap: anywhere; }
 .dialog-foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
 .dialog-foot .hint { margin-right: auto; }
+/* 不可逆操作的确认键 */
+.btn-danger {
+  background: var(--danger); border-color: transparent; color: var(--text-on-accent);
+  font-weight: var(--weight-medium);
+}
+.btn-danger:hover:not(:disabled) { background: var(--danger); border-color: transparent; filter: brightness(1.08); }
+.btn-danger:active:not(:disabled) { filter: brightness(0.94); }
 @keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
 
 /* toast */
