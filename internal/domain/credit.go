@@ -36,7 +36,9 @@ type LedgerEntry struct {
 	Reason       string          `json:"reason,omitempty"`
 	// OperatorID 管理员操作时记录，用户自发行为为 nil。
 	OperatorID *string `json:"operator_id"`
-	// IdempotencyKey 防止管理员重复点击充两次；同 key 二次写入返回 409。
+	// IdempotencyKey 是这条流水在唯一键上占的位子；同 key 二次写入返回 409。
+	// 两个来源共用它：管理员充值（防重复点击，键由管理员给）与任务结算
+	// （charge/refund 各任务一个确定性的键，靠它挡住并发重复结算）。
 	IdempotencyKey string    `json:"-"`
 	CreatedAt      time.Time `json:"created_at"`
 }
