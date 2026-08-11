@@ -143,10 +143,19 @@ func (s *server) streamBlob(w http.ResponseWriter, r *http.Request, key, mime st
 
 	h := w.Header()
 	h.Set("Content-Type", mime)
-	h.Set("Accept-Ranges", "bytes")
 	// 资产内容不可变（同一个 id + variant 永远是同一份字节），可以长缓存。
 	// private 是因为它属于某个用户，中间层不该替所有人存一份。
 	h.Set("Cache-Control", "private, max-age=31536000, immutable")
+
+	// 配了 X-Accel 前缀就把字节下发交给 nginx：Go 只做鉴权 + 解析 key（上面的
+	// Stat 已确认文件在），文件本身由 nginx 从磁盘 sendfile 直发，range、
+	// Content-Length、Content-Range 都由它按请求补，后端不再 io.Copy 整段视频。
+	if prefix := s.deps.Config.AssetXAccelPrefix; prefix != "" {
+		h.Set("X-Accel-Redirect", prefix+"/"+key)
+		return
+	}
+
+	h.Set("Accept-Ranges", "bytes")
 
 	offset, length, ok := parseRange(r.Header.Get("Range"), info.Bytes)
 	if !ok {
