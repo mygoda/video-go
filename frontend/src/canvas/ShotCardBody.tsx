@@ -5,6 +5,7 @@ import { assetPreview } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { cardTitle } from './cardTitle';
 import { readShot } from './shot';
+import { VersionSwitch } from './VersionSwitch';
 
 interface ShotCardBodyProps {
   card: CanvasCard;
@@ -17,6 +18,8 @@ interface ShotCardBodyProps {
   firstFramePending: boolean;
   /** 这一镜的成片正在出 */
   renderPending: boolean;
+  /** 切换成片版本（把 asset_id 指到 history 里某一版） */
+  onSelectVersion(cardId: string, assetId: string): void;
 }
 
 /**
@@ -28,7 +31,7 @@ interface ShotCardBodyProps {
  * 画面排在最上面：首帧出完那一步要停下来等用户逐张确认，出片出完也要停下来
  * 等他逐条看，而「确认」就是看画面，画面得比描述先进入视线。
  */
-export function ShotCardBody({ card, k, firstFramePending, renderPending }: ShotCardBodyProps) {
+export function ShotCardBody({ card, k, firstFramePending, renderPending, onSelectVersion }: ShotCardBodyProps) {
   const shot = readShot(card);
   const meta = [shot.shot_size, shot.camera, shot.duration_sec > 0 ? `${shot.duration_sec}s` : '']
     .filter(Boolean)
@@ -37,11 +40,13 @@ export function ShotCardBody({ card, k, firstFramePending, renderPending }: Shot
   return (
     <div className="body card-text">
       <ShotFrame
+        card={card}
         firstFrameAssetId={shot.first_frame_asset_id}
         videoAssetId={card.asset_id ?? ''}
         k={k}
         firstFramePending={firstFramePending}
         renderPending={renderPending}
+        onSelectVersion={onSelectVersion}
       />
       {meta && <div className="shot-meta mono">{meta}</div>}
       <p className="shot-desc">{shot.description || '（还没有镜头描述，双击编辑）'}</p>
@@ -60,11 +65,13 @@ export function ShotCardBody({ card, k, firstFramePending, renderPending }: Shot
 }
 
 interface ShotFrameProps {
+  card: CanvasCard;
   firstFrameAssetId: string;
   videoAssetId: string;
   k: number;
   firstFramePending: boolean;
   renderPending: boolean;
+  onSelectVersion(cardId: string, assetId: string): void;
 }
 
 /**
@@ -80,7 +87,7 @@ interface ShotFrameProps {
  * 出片 / 出图中显示骨架而不是留白：这一格的高度是固定的，有没有画面版式都不动，
  * 否则一批产物陆续回来时整片分镜区会跟着抖十几次。
  */
-function ShotFrame({ firstFrameAssetId, videoAssetId, k, firstFramePending, renderPending }: ShotFrameProps) {
+function ShotFrame({ card, firstFrameAssetId, videoAssetId, k, firstFramePending, renderPending, onSelectVersion }: ShotFrameProps) {
   const { data: firstFrame } = useQuery({
     queryKey: ['asset', firstFrameAssetId],
     queryFn: () => api.asset(firstFrameAssetId),
@@ -122,6 +129,7 @@ function ShotFrame({ firstFrameAssetId, videoAssetId, k, firstFramePending, rend
         ) : (
           <div className="skeleton" />
         )}
+        <VersionSwitch card={card} onSelectVersion={onSelectVersion} />
       </div>
     );
   }
