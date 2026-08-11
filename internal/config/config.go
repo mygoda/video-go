@@ -85,6 +85,13 @@ type Config struct {
 	// 本地前后端分离开发必须放行 Vite 的来源。
 	CORSOrigins []string
 
+	// AssetXAccelPrefix 配了就把资产字节下发交给 nginx（X-Accel-Redirect）：
+	// Go 只做鉴权 + 解析出存储 key，文件由 nginx 用 sendfile 直发（range、缓存、
+	// 并发都由它高效处理），后端不再 io.Copy 整个视频。值是 nginx 里那个 internal
+	// location 的前缀，如 "/_asset"，它 alias 到 StorageRoot。
+	// 空（默认）= 关闭，退回后端自己流式下发——本地开发没有 nginx 时照常能跑。
+	AssetXAccelPrefix string
+
 	// JWTSecretEnv 是**存放密钥的那个环境变量的名字**，
 	// JWTSecret 是从它读出来的值。与 Provider.CredentialRef 同一套思路：
 	// 配置里出现的是变量名，密钥本身只活在环境里。
@@ -123,6 +130,7 @@ func Load() (*Config, error) {
 		StorageRoot:       envString("STORAGE_ROOT", DefaultStorageRoot),
 		PublicBaseURL:     strings.TrimRight(envString("PUBLIC_BASE_URL", DefaultPublicBaseURL), "/"),
 		CORSOrigins:       splitCSV(envString("CORS_ORIGINS", DefaultCORSOrigins)),
+		AssetXAccelPrefix: strings.TrimRight(envString("ASSET_XACCEL_PREFIX", ""), "/"),
 		StoryboardModelID: envString("STORYBOARD_MODEL", ""),
 		ComposeModelID:    envString("COMPOSE_MODEL", ""),
 	}
@@ -184,18 +192,19 @@ func Load() (*Config, error) {
 // 密码一起写进日志文件。这里只输出不敏感的字段，密钥一律以变量名代替。
 func (c *Config) Redacted() map[string]string {
 	return map[string]string{
-		"http_addr":          c.HTTPAddr,
-		"shutdown_timeout":   c.ShutdownTimeout.String(),
-		"storage_root":       c.StorageRoot,
-		"public_base_url":    c.PublicBaseURL,
-		"cors_origins":       strings.Join(c.CORSOrigins, ","),
-		"mysql_dsn":          "(set via " + Prefix + "MYSQL_DSN)",
-		"jwt_secret":         "(set via " + c.JWTSecretEnv + ")",
-		"jwt_ttl":            c.JWTTTL.String(),
-		"worker_concurrency": strconv.Itoa(c.WorkerConcurrency),
-		"poll_interval":      c.PollInterval.String(),
-		"storyboard_model":   c.StoryboardModelID,
-		"compose_model":      c.ComposeModelID,
+		"http_addr":           c.HTTPAddr,
+		"shutdown_timeout":    c.ShutdownTimeout.String(),
+		"storage_root":        c.StorageRoot,
+		"public_base_url":     c.PublicBaseURL,
+		"cors_origins":        strings.Join(c.CORSOrigins, ","),
+		"asset_xaccel_prefix": c.AssetXAccelPrefix,
+		"mysql_dsn":           "(set via " + Prefix + "MYSQL_DSN)",
+		"jwt_secret":          "(set via " + c.JWTSecretEnv + ")",
+		"jwt_ttl":             c.JWTTTL.String(),
+		"worker_concurrency":  strconv.Itoa(c.WorkerConcurrency),
+		"poll_interval":       c.PollInterval.String(),
+		"storyboard_model":    c.StoryboardModelID,
+		"compose_model":       c.ComposeModelID,
 	}
 }
 

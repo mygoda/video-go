@@ -177,6 +177,15 @@ func (d *deriver) Derive(ctx context.Context, a *domain.Asset) (map[Variant]stri
 			case err != nil:
 				d.log.Warn("生成封面帧失败，资产仍然有效", "asset_id", a.ID, "err", err)
 			}
+
+			// 把视频重排成 faststart（moov 提前）。上游（seedance 等）出的 mp4
+			// 常把 moov 放在文件尾，浏览器要下载到尾才能开播——这是「打开慢」的
+			// 主因。-c copy 无损搬运，不重编码；失败只记日志，原文件照样能播。
+			if d.ffmpeg != "" {
+				if err := d.faststart(ctx, *a, tmp); err != nil && !errors.Is(err, ErrUnsupported) {
+					d.log.Warn("视频 faststart 重排失败，仍可播放但首帧偏慢", "asset_id", a.ID, "err", err)
+				}
+			}
 		}
 	}
 
@@ -441,6 +450,56 @@ func (d *deriver) posterFrom(ctx context.Context, a domain.Asset, path string) (
 		return "", fmt.Errorf("asset: 写入资产 %s 的封面帧: %w", a.ID, err)
 	}
 	return key, nil
+}
+
+// faststart 把 srcPath 的视频重排成 moov 在前（-movflags +faststart），写回原
+// StorageKey。无损：-c copy 只搬运容器，不重编码。+faststart 需要可 seek 的输出，
+// 所以先写临时文件再读回 Put，不能走管道。已是 faststart 的文件重排一次也无妨。
+func (d *deriver) faststart(ctx context.Context, a domain.Asset, srcPath string) error {
+	if d.ffmpeg == "" {
+		return fmt.Errorf("%w: PATH 上没有 ffmpeg", ErrUnsupported)
+	}
+	cctx, cancel := context.WithTimeout(ctx, posterTimeout)
+	defer cancel()
+
+	out, err := os.CreateTemp("", "aigc-faststart-*"+filepath.Ext(srcPath))
+	if err != nil {
+		return fmt.Errorf("asset: 创建 faststart 临时文件: %w", err)
+	}
+	outName := out.Name()
+	_ = out.Close()
+	defer func() { _ = os.Remove(outName) }()
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(cctx, d.ffmpeg,
+		"-nostdin", "-loglevel", "error",
+		"-i", srcPath,
+		"-map", "0", "-c", "copy",
+		"-movflags", "+faststart",
+		"-y", outName,
+	)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("asset: 视频 %s faststart 重排: %w (%s)", a.ID, err, truncate(stderr.String(), 200))
+	}
+
+	f, err := os.Open(outName)
+	if err != nil {
+		return fmt.Errorf("asset: 读取 faststart 结果: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return fmt.Errorf("asset: faststart 结果为空，放弃写回（保留原文件）")
+	}
+	mime := a.MIME
+	if mime == "" {
+		mime = "video/mp4"
+	}
+	if _, err := d.blobs.Put(ctx, a.StorageKey, f, mime); err != nil {
+		return fmt.Errorf("asset: 写回 faststart 视频 %s: %w", a.ID, err)
+	}
+	return nil
 }
 
 // spillToTemp 把一个存储对象落到本地临时文件，返回其路径。
