@@ -26,10 +26,13 @@ export function ConfirmDialog({
   onConfirm,
 }: ConfirmDialogProps) {
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
+  // 不可逆操作把初始焦点给取消键：否则用户手上残留一次回车就直接执行了
   useEffect(() => {
-    confirmRef.current?.focus();
-  }, []);
+    const initial = danger ? cancelRef.current : confirmRef.current;
+    initial?.focus();
+  }, [danger]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {
@@ -60,7 +63,7 @@ export function ConfirmDialog({
         <h2>{title}</h2>
         <div className="dialog-body">{body}</div>
         <div className="dialog-foot">
-          <button type="button" className="btn" disabled={busy} onClick={onCancel}>
+          <button ref={cancelRef} type="button" className="btn" disabled={busy} onClick={onCancel}>
             取消
           </button>
           <button
