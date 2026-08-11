@@ -31,6 +31,8 @@ interface CanvasCardViewProps {
   onSelect(id: string): void;
   onDragStart(e: React.PointerEvent, card: CanvasCard): void;
   onEditStart(id: string): void;
+  /** 切换到这张卡历史里的某一版产物（把 asset_id 指过去） */
+  onSelectVersion(cardId: string, assetId: string): void;
 }
 
 /**
@@ -65,6 +67,7 @@ export function CanvasCardView({
   onSelect,
   onDragStart,
   onEditStart,
+  onSelectVersion,
 }: CanvasCardViewProps) {
   const wantsMedia = k >= 0.4 && visible;
   const { data: asset } = useAsset(card.asset_id, wantsMedia);
@@ -160,13 +163,44 @@ export function CanvasCardView({
         />
       )}
 
-      {(card.history?.length ?? 0) > 1 && (
-        <span className="version-switch">
-          <span className="mono">
-            {card.history?.length}/{card.history?.length}
+      {(card.history?.length ?? 0) > 1 && (() => {
+        const hist = card.history!;
+        const found = hist.findIndex((h) => h.asset_id === card.asset_id);
+        // 当前 asset 不在历史里（老数据）就当作停在最新那一版
+        const idx = found < 0 ? hist.length - 1 : found;
+        const go = (to: number) => {
+          if (to < 0 || to >= hist.length || to === idx) return;
+          onSelectVersion(card.id, hist[to].asset_id);
+        };
+        return (
+          // stopPropagation：点切版按钮不该顺带选中 / 拖动这张卡
+          <span className="version-switch" onPointerDown={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="ver-btn"
+              aria-label="上一版成片"
+              title="上一版"
+              disabled={idx <= 0}
+              onClick={() => go(idx - 1)}
+            >
+              ‹
+            </button>
+            <span className="mono">
+              {idx + 1}/{hist.length}
+            </span>
+            <button
+              type="button"
+              className="ver-btn"
+              aria-label="下一版成片"
+              title="下一版"
+              disabled={idx >= hist.length - 1}
+              onClick={() => go(idx + 1)}
+            >
+              ›
+            </button>
           </span>
-        </span>
-      )}
+        );
+      })()}
     </article>
   );
 }

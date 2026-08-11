@@ -90,7 +90,13 @@ export function ComposeBar({ projectId, picks, cards, onClear, onExit }: Compose
       await qc.invalidateQueries({ queryKey: qk.tasks });
       await qc.invalidateQueries({ queryKey: qk.me });
     } catch (err) {
-      toast(err instanceof ApiError ? err.message : '合成提交失败，请稍后重试', 'danger');
+      // 合成的报错常常是可操作的（哪一段还没出片、哪一段缺时长），把第一条
+      // field_error 顶到 toast 里，而不是只甩一句「参数校验未通过」。
+      const msg =
+        err instanceof ApiError
+          ? err.body.field_errors?.[0]?.message ?? err.message
+          : '合成提交失败，请稍后重试';
+      toast(msg, 'danger');
     } finally {
       setBusy(false);
     }

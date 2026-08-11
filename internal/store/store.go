@@ -204,7 +204,10 @@ type CanvasRepo interface {
 	//
 	// 卡片已被删除时静默成功：任务照样完成、产物照样进资产库，
 	// 只是没有卡片可回填了。
-	SetCardResult(ctx context.Context, projectID, cardID string, assetID *string) error
+	//
+	// prompt 是生成这一版产物的提示词；每次回填都把 {asset_id, prompt, at}
+	// 追加进卡片 history，供版本切换器 ‹2/3› 来回切。asset_id 指向当前版。
+	SetCardResult(ctx context.Context, projectID, cardID string, assetID *string, prompt string) error
 }
 
 // SkillRepo 读写 Skill 记录。

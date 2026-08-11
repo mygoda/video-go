@@ -516,7 +516,7 @@ func (s *Service) publishCard(ctx context.Context, t domain.Task, status domain.
 	}
 	if assetID != nil && s.deps.Canvas != nil {
 		if err := s.deps.Canvas.SetCardResult(
-			context.WithoutCancel(ctx), *t.CanvasID, *t.CardID, assetID); err != nil {
+			context.WithoutCancel(ctx), *t.CanvasID, *t.CardID, assetID, t.Prompt); err != nil {
 			s.log.Warn("回填画布卡片产物失败，卡片上不会出现这次的产物",
 				"task_id", t.ID, "canvas_id", *t.CanvasID, "card_id", *t.CardID, "err", err)
 		}

@@ -30,7 +30,9 @@ export function TaskFeed({ modality, onRetry, onEditPrompt }: TaskFeedProps) {
   const { data: tasks, isLoading } = useTasks();
 
   const groups = useMemo(() => {
-    const mine = (tasks ?? []).filter((t) => t.modality === modality);
+    // 画布里产的任务（首帧 / 出片 / 剧本）带 canvas_id，只属于那张画布，不该
+    // 混进生成器的任务流——生成器只列用户在这个页面直接发起的任务。
+    const mine = (tasks ?? []).filter((t) => t.modality === modality && !t.canvas_id);
     const byDay = new Map<string, Task[]>();
     for (const t of mine) {
       const key = dayLabel(t.created_at);

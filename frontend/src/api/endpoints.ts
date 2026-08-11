@@ -146,6 +146,13 @@ export const api = {
       body: { instruction, model_id: model_id ?? undefined },
     }),
 
+  // 按一句指令让模型润色一张镜头卡（同时改画面描述与台词）。返回后前端重拉画布。
+  refineShotCard: (projectId: string, cardId: string, instruction: string, model_id: string | null) =>
+    request<CanvasRefineResponse>(`/canvas/${projectId}/cards/${cardId}/refine-shot`, {
+      method: 'POST',
+      body: { instruction, model_id: model_id ?? undefined },
+    }),
+
   // 拆分镜由用户在剧本卡上主动发起，剧本那一步不会自己走到这里。
   // shot_count 的上限（12）后端会 400 顶回来，前端在流程条上提前拦一道：
   // 让人点了才知道自己填的数不合法，等于没有上限。

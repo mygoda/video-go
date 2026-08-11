@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasCard, CanvasOp, CanvasState, CharacterParams, ShotParams } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
-import { qk, useCanvas, useMe, useModels, useProjects } from '@/api/queries';
+import { qk, useCanvas, useMe, useModels, useProjects, useTasks } from '@/api/queries';
 import { useSubmitTask } from '@/hooks/useSubmitTask';
 import { defaultValues } from '@/schema/form';
 import { estimateCost } from '@/schema/pricing';
@@ -22,6 +22,7 @@ import { ComposeBar } from '@/canvas/ComposeBar';
 import { FlowStatusBar } from '@/canvas/FlowStatusBar';
 import { ScriptVersionsPanel } from '@/canvas/ScriptVersionsPanel';
 import { ScriptRefinePanel } from '@/canvas/ScriptRefinePanel';
+import { ShotRefinePanel } from '@/canvas/ShotRefinePanel';
 import { activeScript, MAX_SHOTS } from '@/canvas/flow';
 import { cardTitle } from '@/canvas/cardTitle';
 import {
@@ -143,6 +144,19 @@ export function CanvasPage() {
   // （没图的 vs 有图没片的），互相拦住只会让用户以为界面卡了。
   const [renderBusy, setRenderBusy] = useState(false);
   const [rendersInFlight, setRendersInFlight] = useState<ReadonlySet<string>>(new Set());
+  // 出片在途以真实任务状态为准，不能只靠上面的本地 Set：Set 随组件卸载清空，切走
+  // 再回来就丢了「出片中」。出片任务带 card_id，从任务列表里对回镜头卡，离开画布
+  // 再回来照样显示在途，也挡住对同一镜的二次出片。
+  const { data: liveTasks } = useTasks();
+  const renderingCards = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of liveTasks ?? []) {
+      if (t.card_id && t.canvas_id === projectId && t.modality === 'video' && (t.status === 'queued' || t.status === 'running')) {
+        s.add(t.card_id);
+      }
+    }
+    return s;
+  }, [liveTasks, projectId]);
   // 没有单独表过态的镜头，台词进不进出片 prompt。默认开：人声是上游音画同步
   // 生成的、不额外花钱的东西，而且这也是加开关之前的行为——默认关会让所有
   // 既有创作线在一次发版之后集体变哑。
@@ -778,6 +792,22 @@ export function CanvasPage() {
     }
   }
 
+  async function runRefineShot(card: CanvasCard, instruction: string, modelId: string | null): Promise<void> {
+    if (refining) return;
+    setRefining(true);
+    try {
+      await flush();
+      await api.refineShotCard(projectId, card.id, instruction, modelId);
+      await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+      setRefineOpen(false);
+      toast('已按指令润色这一镜的画面与台词');
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : '润色失败，请稍后重试', 'danger');
+    } finally {
+      setRefining(false);
+    }
+  }
+
   /** 回退：把那一版的正文（和它当时的标题，如果有）写回当前，这次回退本身也会被服务端留成一版。 */
   function restoreScript(card: CanvasCard, version: ScriptVersion): void {
     if ((card.text ?? '') === version.text) return;
@@ -956,10 +986,17 @@ export function CanvasPage() {
                 dimmed={Boolean(selectedId) && card.id !== selectedId && !lineageIds.has(card.id)}
                 pickIndex={picks.indexOf(card.id) + 1}
                 firstFramePending={framesInFlight.has(card.id)}
-                renderPending={rendersInFlight.has(card.id)}
+                renderPending={rendersInFlight.has(card.id) || renderingCards.has(card.id)}
                 onSelect={onCardClick}
                 onDragStart={onCardDragStart}
                 onEditStart={setEditingId}
+                onSelectVersion={(cardId, assetId) =>
+                  // 回退到某一版成片：把 asset_id 指过去。history 不动，只挪当前指针。
+                  enqueue([{ type: 'card.update', id: cardId, patch: { asset_id: assetId } }], (prev) => ({
+                    ...prev,
+                    cards: prev.cards.map((c) => (c.id === cardId ? { ...c, asset_id: assetId } : c)),
+                  }))
+                }
               />
             );
           })}
@@ -989,6 +1026,19 @@ export function CanvasPage() {
                   aria-label="优化剧本"
                   aria-pressed={refineOpen}
                   disabled={!(selected.text ?? '').trim() || refining}
+                  onClick={() => setRefineOpen((on) => !on)}
+                >
+                  ✨
+                </button>
+              )}
+              {selected.kind === 'shot' && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="按一句指令让模型润色这一镜的画面描述与台词"
+                  aria-label="润色镜头"
+                  aria-pressed={refineOpen}
+                  disabled={refining}
                   onClick={() => setRefineOpen((on) => !on)}
                 >
                   ✨
@@ -1066,7 +1116,7 @@ export function CanvasPage() {
                         : '出这一镜的成片'
                   }
                   aria-label={hasVideo(selected) ? '重出成片' : '出成片'}
-                  disabled={!renderModel || !hasFirstFrame(selected) || rendersInFlight.has(selected.id)}
+                  disabled={!renderModel || !hasFirstFrame(selected) || rendersInFlight.has(selected.id) || renderingCards.has(selected.id)}
                   onClick={() => void rerunRender(selected)}
                 >
                   ▶
@@ -1124,6 +1174,17 @@ export function CanvasPage() {
               viewportSize={viewportSize}
               busy={refining}
               onSubmit={(instruction, modelId) => void runRefine(selected, instruction, modelId)}
+              onClose={() => setRefineOpen(false)}
+            />
+          )}
+
+          {refineOpen && selected?.kind === 'shot' && (
+            <ShotRefinePanel
+              card={selected}
+              toolbar={{ ...toolbar, ...toolbarSize }}
+              viewportSize={viewportSize}
+              busy={refining}
+              onSubmit={(instruction, modelId) => void runRefineShot(selected, instruction, modelId)}
               onClose={() => setRefineOpen(false)}
             />
           )}
