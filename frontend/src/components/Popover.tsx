@@ -17,6 +17,7 @@ interface PopoverProps {
  */
 export function Popover({ open, onClose, trigger, alignRight, dropUp, children }: PopoverProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const floatRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -34,11 +35,24 @@ export function Popover({ open, onClose, trigger, alignRight, dropUp, children }
     };
   }, [open, onClose]);
 
+  // 弹层挂在画布里，而画布在祖先元素上用原生 wheel 监听平移/缩放。滚弹层里的
+  // 长列表时，wheel 会冒泡到那个监听上，结果画布跟着动、列表纹丝不动。React 的
+  // onWheel 拦不住（祖先的原生监听在冒泡阶段先跑），必须用原生监听在弹层这一层
+  // 就 stopPropagation。只挡传播、不 preventDefault，列表照常原生滚动。
+  useEffect(() => {
+    const el = floatRef.current;
+    if (!open || !el) return;
+    const stop = (e: WheelEvent) => e.stopPropagation();
+    el.addEventListener('wheel', stop);
+    return () => el.removeEventListener('wheel', stop);
+  }, [open]);
+
   return (
     <div className="popover-anchor" ref={ref}>
       {trigger}
       {open && (
         <div
+          ref={floatRef}
           className={`popover popover-float${alignRight ? ' align-right' : ''}${dropUp ? ' drop-up' : ''}`}
           role="dialog"
         >
