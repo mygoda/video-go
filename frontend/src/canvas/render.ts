@@ -38,6 +38,16 @@ export function pickRenderModel(models: ModelCapabilitySchema[] | undefined): Mo
 }
 
 /**
+ * 这一镜到底带不带人声：卡片上表过态就听它的，没表过态跟随全局默认。
+ *
+ * 三态在这里收敛成布尔，而收敛只发生在这一个函数里 —— 别处再写一遍
+ * `shot.voice ?? fallback`，改默认语义时就得同时改对好几处。
+ */
+export function voiceOn(shot: ShotParams, voiceDefault: boolean): boolean {
+  return shot.voice ?? voiceDefault;
+}
+
+/**
  * 出片 prompt 同时用画面描述与台词 —— 与出图那一步相反。
  *
  * 出图不许带台词（模型会把话画成画面里的字）；出片必须带，seedance 是音画同步
@@ -46,10 +56,15 @@ export function pickRenderModel(models: ModelCapabilitySchema[] | undefined): Mo
  *
  * 台词单独起一行并加提示词，不是直接接在描述后面：连排的话模型会把它当成
  * 画面内容的一部分去构图，出来是一块写着字的招牌。
+ *
+ * 人声关掉时台词**整句不进 prompt**，只留画面描述 —— 成片就只有环境音。
+ * 这是唯一的静音开关：模型不接受"生成但别念"这类指令，能不能听见人说话
+ * 完全取决于这几个字有没有出现在 prompt 里。台词本身照旧留在卡片上，
+ * 字幕仍然取得到它。
  */
-export function renderPrompt(shot: ShotParams): string {
+export function renderPrompt(shot: ShotParams, voiceDefault: boolean): string {
   const description = shot.description.trim();
-  const dialogue = shot.dialogue.trim();
+  const dialogue = voiceOn(shot, voiceDefault) ? shot.dialogue.trim() : '';
   return [description, dialogue ? `台词：「${dialogue}」` : ''].filter(Boolean).join('\n');
 }
 
@@ -63,9 +78,13 @@ export function hasVideo(card: CanvasCard): boolean {
  *
  * 没首帧的一律不排，也不顺手替它出一张 —— 首帧是用户逐张看过、确认过的东西，
  * 批量出片时悄悄补一张没人看过的图，等于把那个确认点跳过去了。
+ *
+ * 判据用的是**这次真要提交的那份 prompt**（含人声开关），不是"卡片上有没有字"：
+ * 一镜只写了台词、没写画面描述、又关掉人声，拼出来是空 prompt，提交上去只会
+ * 被后端顶回来。少排一镜看得见（流程条上的计数会少），提交失败要翻错误才知道。
  */
-export function shotsAwaitingRender(shots: CanvasCard[]): CanvasCard[] {
-  return shots.filter((c) => hasFirstFrame(c) && !hasVideo(c) && renderPrompt(readShot(c)) !== '');
+export function shotsAwaitingRender(shots: CanvasCard[], voiceDefault: boolean): CanvasCard[] {
+  return shots.filter((c) => hasFirstFrame(c) && !hasVideo(c) && renderPrompt(readShot(c), voiceDefault) !== '');
 }
 
 function extensionOf(mime: string): string {

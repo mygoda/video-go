@@ -157,10 +157,20 @@ export const api = {
 
   // card_ids 是**有序**的，顺序即成片里的片段顺序，后端不排序也不去歧义。
   // client_token 由调用方给：断网重发拿回同一条任务，而不是又拼一次、又扣一次钱。
-  compose: (projectId: string, card_ids: string[], title: string, client_token: string) =>
+  //
+  // mute / subtitles 是两个布尔，不是字幕正文：正文由后端按卡片顺序取各镜的
+  // 台词、按各段的实际时长排时间轴。前端算这件事得先把每件产物的 duration_ms
+  // 逐个拉一遍，而后端提交那一步本来就要逐件查资产的归属。
+  compose: (
+    projectId: string,
+    card_ids: string[],
+    title: string,
+    client_token: string,
+    options: { mute: boolean; subtitles: boolean },
+  ) =>
     request<CreateTaskResponse>(`/canvas/${projectId}/compose`, {
       method: 'POST',
-      body: { card_ids, title, client_token },
+      body: { card_ids, title, client_token, ...options },
     }),
 };
 

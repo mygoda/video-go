@@ -111,7 +111,7 @@ func TestShotParamsJSONContract(t *testing.T) {
 	raw := marshalToMap(t, ShotParams{ShotNo: 1, Description: "雨夜的巷口"})
 
 	for _, key := range []string{
-		"shot_no", "description", "dialogue", "duration_sec", "camera", "shot_size",
+		"shot_no", "description", "dialogue", "voice", "duration_sec", "camera", "shot_size",
 		"first_frame_asset_id",
 	} {
 		if _, ok := raw[key]; !ok {
@@ -120,6 +120,42 @@ func TestShotParamsJSONContract(t *testing.T) {
 	}
 	if raw["dialogue"] != "" {
 		t.Errorf("dialogue = %#v, want an empty string for a wordless shot", raw["dialogue"])
+	}
+	// 没表过态的镜头序列化成 null 而不是 false：false 是「有人明确关掉了」，
+	// 与「还没人动过它」必须分得开，否则前端显示不出"跟随全局默认"。
+	if raw["voice"] != nil {
+		t.Errorf("voice = %#v, want null for a shot nobody has touched", raw["voice"])
+	}
+}
+
+// TestShotParamsVoiceIsTriState 钉住人声开关的三态。
+//
+// 这个字段是后加的，存量镜头卡的 params 里根本没有这个 key。做成布尔的话
+// 零值就是「关」——一次发版会把所有已经写好台词的分镜静音，而用户在界面上
+// 看不出是谁把它关的。nil 与 false 必须解得出区别。
+func TestShotParamsVoiceIsTriState(t *testing.T) {
+	legacy, err := ParseShotParams(map[string]any{"shot_no": 1, "dialogue": "你终于来了"})
+	if err != nil {
+		t.Fatalf("存量镜头卡被拒了: %v", err)
+	}
+	if legacy.Voice != nil {
+		t.Errorf("没有 voice key 的存量卡应解出 nil，实际 %v", *legacy.Voice)
+	}
+
+	off, err := ParseShotParams(map[string]any{"shot_no": 1, "dialogue": "你终于来了", "voice": false})
+	if err != nil {
+		t.Fatalf("ParseShotParams: %v", err)
+	}
+	if off.Voice == nil || *off.Voice {
+		t.Errorf("明确关掉应解出 false，实际 %v", off.Voice)
+	}
+
+	on, err := ParseShotParams(map[string]any{"shot_no": 1, "dialogue": "你终于来了", "voice": true})
+	if err != nil {
+		t.Fatalf("ParseShotParams: %v", err)
+	}
+	if on.Voice == nil || !*on.Voice {
+		t.Errorf("明确打开应解出 true，实际 %v", on.Voice)
 	}
 }
 

@@ -176,6 +176,14 @@ export interface ShotParams {
   shot_no: number;
   description: string;
   dialogue: string;
+  /**
+   * 这一镜的台词进不进出片 prompt：true 进（成片带同步人声），false 不进
+   * （成片只有环境音），null 表示这一镜没表过态、跟随流程条上的全局默认。
+   *
+   * 三态而不是布尔：这个字段是后加的，存量镜头卡的 params 里没有这个键，
+   * 布尔的零值会让它们一律显示成「关」，用户看不出是谁把台词静音的。
+   */
+  voice: boolean | null;
   duration_sec: number;
   camera: string;
   shot_size: string;

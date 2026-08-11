@@ -39,6 +39,10 @@ export function ComposeBar({ projectId, picks, cards, onClear, onExit }: Compose
   const { data: tasks } = useTasks();
   const [taskId, setTaskId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 两个都默认关：拼接这一步不该悄悄改动素材。默认静音会把上一步好不容易生成的
+  // 同步人声整条抹掉，默认挂字幕则会给一堆没台词的片段拼上一条空轨。
+  const [mute, setMute] = useState(false);
+  const [subtitles, setSubtitles] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
 
   const picked = picks.map((id) => cards.find((c) => c.id === id)).filter((c): c is CanvasCard => Boolean(c));
@@ -77,7 +81,10 @@ export function ComposeBar({ projectId, picks, cards, onClear, onExit }: Compose
   async function submit(): Promise<void> {
     setBusy(true);
     try {
-      const res = await api.compose(projectId, picks, composeTitle(picked), crypto.randomUUID());
+      const res = await api.compose(projectId, picks, composeTitle(picked), crypto.randomUUID(), {
+        mute,
+        subtitles,
+      });
       setTaskId(res.task_id);
       await qc.invalidateQueries({ queryKey: qk.tasks });
       await qc.invalidateQueries({ queryKey: qk.me });
@@ -139,6 +146,39 @@ export function ComposeBar({ projectId, picks, cards, onClear, onExit }: Compose
             ))}
             {!picks.length && <li className="sub">在画布上依次点选要拼接的卡片</li>}
           </ol>
+          {/*
+            这两个开关只作用于**拼接这一次**，不重出任何一段：静音是把已经编进
+            各段视频里的声音在拼接时丢掉（-an），字幕是按各镜台词与各段实际时长
+            新排一条软字幕轨挂上去。想让某一镜的成片本身没有人声，得回上一步
+            关掉那一镜的人声再重出——那是生成时就定死的事。
+          */}
+          <div className="compose-options">
+            <label className="flow-field" htmlFor="compose-mute">
+              <input
+                id="compose-mute"
+                type="checkbox"
+                checked={mute}
+                disabled={busy}
+                onChange={(e) => setMute(e.target.checked)}
+              />
+              去掉声音
+            </label>
+            <label className="flow-field" htmlFor="compose-subtitles">
+              <input
+                id="compose-subtitles"
+                type="checkbox"
+                checked={subtitles}
+                disabled={busy}
+                onChange={(e) => setSubtitles(e.target.checked)}
+              />
+              挂字幕轨
+            </label>
+            <span className="hint">
+              {subtitles
+                ? '字幕直接取各镜卡片上的台词原文，按各段实际时长排时间轴；是可关闭的软字幕轨，不烧进画面'
+                : '字幕取各镜台词原文，不做语音转写'}
+            </span>
+          </div>
           {notReady.length > 0 && (
             <div className="sub" style={{ color: 'var(--warning)' }}>
               有 {notReady.length} 张卡片还没有产出，去掉它们才能合成

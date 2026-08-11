@@ -26,9 +26,12 @@ interface FlowStatusBarProps {
   renderPending: number;
   /** 这一批出片要花多少积分。模型目录还没拉到时为 null */
   renderCost: number | null;
+  /** 没有单独表过态的镜头，台词进不进出片 prompt */
+  voiceDefault: boolean;
   onStoryboard(count: number): void;
   onFirstFrames(): void;
   onRenders(): void;
+  onVoiceDefault(on: boolean): void;
   onAddShot(): void;
   onRemoveShot(): void;
   onResizeShots(count: number): void;
@@ -55,9 +58,11 @@ export function FlowStatusBar({
   renderBusy,
   renderPending,
   renderCost,
+  voiceDefault,
   onStoryboard,
   onFirstFrames,
   onRenders,
+  onVoiceDefault,
   onAddShot,
   onRemoveShot,
   onResizeShots,
@@ -93,8 +98,10 @@ export function FlowStatusBar({
             renderBusy={renderBusy}
             renderPending={renderPending}
             renderCost={renderCost}
+            voiceDefault={voiceDefault}
             onFirstFrames={onFirstFrames}
             onRenders={onRenders}
+            onVoiceDefault={onVoiceDefault}
             onAddShot={onAddShot}
             onRemoveShot={onRemoveShot}
             onResizeShots={onResizeShots}
@@ -153,8 +160,10 @@ interface ShotActionProps
     | 'renderBusy'
     | 'renderPending'
     | 'renderCost'
+    | 'voiceDefault'
     | 'onFirstFrames'
     | 'onRenders'
+    | 'onVoiceDefault'
     | 'onAddShot'
     | 'onRemoveShot'
     | 'onResizeShots'
@@ -180,8 +189,10 @@ function ShotAction({
   renderBusy,
   renderPending,
   renderCost,
+  voiceDefault,
   onFirstFrames,
   onRenders,
+  onVoiceDefault,
   onAddShot,
   onRemoveShot,
   onResizeShots,
@@ -266,6 +277,21 @@ function ShotAction({
           ⚡<span className="amount mono">{renderCost}</span> 积分
         </span>
       )}
+      {/*
+        人声开关放在出片按钮旁边而不是合成条上：它决定的是**这次生成**的成片里
+        有没有人在说话，改了必须重出才生效。摆到合成那一步会让人以为拼接时还能
+        反悔——而那时候声音早就编进每一段视频里了。
+      */}
+      <label className="flow-field" htmlFor="flow-voice-default">
+        <input
+          id="flow-voice-default"
+          type="checkbox"
+          checked={voiceDefault}
+          disabled={renderBusy}
+          onChange={(e) => onVoiceDefault(e.target.checked)}
+        />
+        台词念出来
+      </label>
       <button
         type="button"
         className="btn btn-sm btn-primary"
@@ -290,7 +316,9 @@ function ShotAction({
               ? `已经到上限 ${MAX_SHOTS} 镜；出图前先把每一镜的描述写好，没写描述的镜头排不上队`
               : '先看图再出片：这一步只出图，出完停下来等你逐张确认'
             : renderPending > 0
-              ? '出片按首帧生成，台词会念出来。一条一分多钟，出完停下来等你逐条看'
+              ? voiceDefault
+                ? '出片按首帧生成，台词会念出来。一条一分多钟，出完停下来等你逐条看'
+                : '出片按首帧生成，台词不念、只有环境音。单镜想单独开口，去那一镜的编辑器里改'
               : '每一镜都有成片了。不满意就选中那一镜，点卡片上的 ▶ 单独重出；要拼成一条片子，点顶栏的「🎬 合成」')}
       </span>
     </>

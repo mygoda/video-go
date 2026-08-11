@@ -131,6 +131,13 @@ export function CanvasPage() {
   // （没图的 vs 有图没片的），互相拦住只会让用户以为界面卡了。
   const [renderBusy, setRenderBusy] = useState(false);
   const [rendersInFlight, setRendersInFlight] = useState<ReadonlySet<string>>(new Set());
+  // 没有单独表过态的镜头，台词进不进出片 prompt。默认开：人声是上游音画同步
+  // 生成的、不额外花钱的东西，而且这也是加开关之前的行为——默认关会让所有
+  // 既有创作线在一次发版之后集体变哑。
+  //
+  // 只活在这一次会话里，不落库：它是「这一批我想怎么出」，不是画布的属性。
+  // 想让某一镜永远带声或永远不带，改的是那一镜自己的 params.voice。
+  const [voiceDefault, setVoiceDefault] = useState(true);
   const [dockCollapsed, setDockCollapsed] = useState(false);
   // 拖卡片的中间位置只落在这里，松手才写进缓存并排队上行
   const dragRef = useRef<DragState | null>(null);
@@ -161,7 +168,7 @@ export function CanvasPage() {
 
   // 点一次「出片」会排上几镜：已经有首帧、还没有成片的那些。没首帧的一律不算，
   // 也不顺手替它出一张——那张图用户没看过，等于把首帧那个确认点跳过去了。
-  const pendingRenders = useMemo(() => shotsAwaitingRender(flowShots).length, [flowShots]);
+  const pendingRenders = useMemo(() => shotsAwaitingRender(flowShots, voiceDefault).length, [flowShots, voiceDefault]);
   // 报价按「每一镜都挂着首帧」算：排上队的镜头个个都有图，而目录里的加价条件
   // 可能就看输入槽有没有填，传空对象会报低。
   const renderCost = useMemo(
@@ -311,6 +318,7 @@ export function CanvasPage() {
           camera: '',
           shot_size: '',
           first_frame_asset_id: '',
+          voice: null,
         }),
         refs: [script.id],
         history: [],
@@ -496,7 +504,7 @@ export function CanvasPage() {
       const input = await firstFrameInput(shot.first_frame_asset_id);
       const res = await submitTask({
         model,
-        prompt: renderPrompt(shot),
+        prompt: renderPrompt(shot, voiceDefault),
         values: defaultValues(model),
         inputs: { [FIRST_FRAME_SLOT]: [input] },
         canvasId: projectId,
@@ -534,7 +542,7 @@ export function CanvasPage() {
     // 用户很可能刚改完某一镜的台词，那次 patch 还压在防抖里；不冲干净
     // 出来的片子念的就是改之前的那句。
     await flush();
-    const targets = shotsAwaitingRender(flowShots);
+    const targets = shotsAwaitingRender(flowShots, voiceDefault);
     if (!targets.length) return;
     setRenderBusy(true);
     try {
@@ -553,8 +561,8 @@ export function CanvasPage() {
       toast('这一镜还没有首帧，出片要拿首帧当第一画面', 'danger');
       return;
     }
-    if (!renderPrompt(readShot(card))) {
-      toast('这一镜既没有描述也没有台词，先写一句再出片', 'danger');
+    if (!renderPrompt(readShot(card), voiceDefault)) {
+      toast('这一镜既没有描述、又关掉了人声，出片没有任何输入；先写一句画面描述再出片', 'danger');
       return;
     }
     await generateVideo(renderModel, card);
@@ -720,9 +728,11 @@ export function CanvasPage() {
         renderBusy={renderBusy}
         renderPending={pendingRenders}
         renderCost={renderCost}
+        voiceDefault={voiceDefault}
         onStoryboard={(count) => void runStoryboard(count)}
         onFirstFrames={() => void runFirstFrames()}
         onRenders={() => void runRenders()}
+        onVoiceDefault={setVoiceDefault}
         onAddShot={() => flowScript && appendShots(flowScript, 1)}
         onRemoveShot={() => flowScript && removeShots(flowScript, 1)}
         onResizeShots={resizeShots}
