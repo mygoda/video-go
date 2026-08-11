@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { qk, useProjects } from '@/api/queries';
 import { api } from '@/api/endpoints';
+import { NewProjectDialog } from '@/components/NewProjectDialog';
 import { toast } from '@/stores/toast';
 
 const COVER_TONES = ['', 'b', 'c', 'd'];
@@ -23,15 +24,15 @@ function relativeTime(iso: string): string {
 export function ProjectListPage() {
   const { data: projects, isLoading } = useProjects();
   const qc = useQueryClient();
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [creating, setCreating] = useState(false);
 
-  async function create(): Promise<void> {
-    const name = window.prompt('项目名称', '新的短剧');
-    if (!name) return;
+  async function create(name: string): Promise<void> {
     setCreating(true);
     try {
       await api.createProject(name);
       await qc.invalidateQueries({ queryKey: qk.projects });
+      setDialogOpen(false);
     } catch {
       toast('创建失败，请稍后重试', 'danger');
     } finally {
@@ -49,8 +50,8 @@ export function ProjectListPage() {
       ) : (
         <div className="proj-grid">
           {/* 新建是排在第一位的虚线占位卡，不是右上角按钮 */}
-          <button type="button" className="proj-new" onClick={() => void create()} disabled={creating}>
-            ＋<span style={{ fontSize: 'var(--text-sm)' }}>{creating ? '创建中…' : '新建项目'}</span>
+          <button type="button" className="proj-new" onClick={() => setDialogOpen(true)}>
+            ＋<span style={{ fontSize: 'var(--text-sm)' }}>新建项目</span>
           </button>
 
           {projects?.map((p, i) => (
@@ -65,6 +66,14 @@ export function ProjectListPage() {
             </Link>
           ))}
         </div>
+      )}
+
+      {dialogOpen && (
+        <NewProjectDialog
+          busy={creating}
+          onCancel={() => setDialogOpen(false)}
+          onSubmit={(name) => void create(name)}
+        />
       )}
     </main>
   );
