@@ -122,6 +122,8 @@ export interface Task {
   error: TaskError | null;
   created_at: string;
   canvas_id?: string;
+  /** 画布内单卡任务（出片带 card_id，首帧不带）。用它把在途任务对回到镜头卡上 */
+  card_id?: string;
   /** 前端乐观态专用：提交中的临时卡片。后端永远不返回这个值 */
   local?: 'submitting' | 'failed';
   client_token?: string;

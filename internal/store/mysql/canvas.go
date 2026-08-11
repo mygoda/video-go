@@ -419,6 +419,10 @@ func (r *canvasRepo) ApplyOps(ctx context.Context, projectID string, baseRevisio
 	return newRevision, nil
 }
 
+// cardMaxVersions 是一张卡片的成片 / 出图版本历史上限。剧本版本上限在 domain
+// （ScriptMaxVersions=50），成片是资产、比文本重，留少一点。
+const cardMaxVersions = 20
+
 // SetCardResult 把任务产物回填到卡片上，并推进 revision。见 store.CanvasRepo。
 //
 // 同样往 canvas_ops 里追一条 card.update：那张表是「创作过程可回放」的数据
@@ -426,7 +430,7 @@ func (r *canvasRepo) ApplyOps(ctx context.Context, projectID string, baseRevisio
 // 回放出来的画布会从头到尾都是空卡片。
 //
 // actor_user_id 记项目主人而不是留空：这一列非空，且产物确实是他花积分生成的。
-func (r *canvasRepo) SetCardResult(ctx context.Context, projectID, cardID string, assetID *string) error {
+func (r *canvasRepo) SetCardResult(ctx context.Context, projectID, cardID string, assetID *string, prompt string) error {
 	if err := requireID("project id", projectID); err != nil {
 		return err
 	}
@@ -449,10 +453,46 @@ func (r *canvasRepo) SetCardResult(ctx context.Context, projectID, cardID string
 			return wrap("lock project", err)
 		}
 
+		// 读一眼现有 history，把这一版产物追加进去。每次成功出片 / 出图都留一版，
+		// 供卡片左下角的版本切换器 ‹2/3› 来回切；asset_id 始终指向当前这一版。
+		// 全程在项目行锁里，「读旧 history—追加—写回」插不进另一次回填。
+		var historyRaw []byte
+		switch err := tx.QueryRowContext(ctx,
+			`SELECT history FROM canvas_cards WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
+			cardID, projectID).Scan(&historyRaw); {
+		case isNoRows(err):
+			// 卡片被用户删掉了。什么也不做。
+			return nil
+		case err != nil:
+			return wrap("load card history", err)
+		}
+
+		setCols := "asset_id = ?"
+		args := []any{nullString(assetID)}
+		if assetID != nil {
+			var history []domain.CardVersion
+			if err := scanJSON(historyRaw, &history); err != nil {
+				return wrap("read card history", err)
+			}
+			history = append(history, domain.CardVersion{
+				AssetID: *assetID, Prompt: prompt, At: time.Now().UTC(),
+			})
+			// 只留最近 cardMaxVersions 版：老到没人会翻的成片再留着只是撑大这一列。
+			if len(history) > cardMaxVersions {
+				history = history[len(history)-cardMaxVersions:]
+			}
+			raw, err := jsonValue(history)
+			if err != nil {
+				return wrap("marshal card history", err)
+			}
+			setCols += ", history = ?"
+			args = append(args, raw)
+		}
+		args = append(args, cardID, projectID)
+
 		res, err := tx.ExecContext(ctx,
-			`UPDATE canvas_cards SET asset_id = ?
-			 WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
-			nullString(assetID), cardID, projectID)
+			`UPDATE canvas_cards SET `+setCols+
+				` WHERE id = ? AND project_id = ? AND deleted_at IS NULL`, args...)
 		if err != nil {
 			return wrap("set card result", err)
 		}
