@@ -834,10 +834,10 @@ export function CanvasPage() {
           <span className="credit-badge">
             ⚡ <span className="mono">{(me?.credits ?? 0).toLocaleString()}</span>
           </span>
-          <button type="button" className="btn btn-sm" onClick={addTextCard}>
+          <button type="button" className="btn btn-sm" title="加一张便签（自由文字，随手记）" onClick={addTextCard}>
             ＋ 便签
           </button>
-          <button type="button" className="btn btn-sm" onClick={addScriptCard}>
+          <button type="button" className="btn btn-sm" title="加一张空白剧本卡，直接在上面写正文" onClick={addScriptCard}>
             ＋ 剧本
           </button>
           <button
@@ -879,7 +879,13 @@ export function CanvasPage() {
           >
             🎬 合成
           </button>
-          <button type="button" className="btn btn-sm" disabled={!selected} onClick={deleteSelected}>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={!selected}
+            title={selected ? '删除选中的卡片（也可以按 Delete / Backspace）' : '先选中一张卡片'}
+            onClick={deleteSelected}
+          >
             删除卡片
           </button>
         </div>
@@ -1070,6 +1076,15 @@ export function CanvasPage() {
                 onClick={() => setDroppedRefs((prev) => prev.filter((id) => id !== selected.id))}
               >
                 ⊹
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                title="删除这张卡片（也可以按 Delete / Backspace）"
+                aria-label="删除卡片"
+                onClick={deleteSelected}
+              >
+                🗑
               </button>
             </div>
           )}
