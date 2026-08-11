@@ -9,6 +9,7 @@ import { cardTitle, KIND_ICON } from './cardTitle';
 import { CharacterCardBody } from './CharacterCardBody';
 import { ScriptCardBody } from './ScriptCardBody';
 import { ShotCardBody } from './ShotCardBody';
+import { VersionSwitch } from './VersionSwitch';
 
 interface CanvasCardViewProps {
   card: CanvasCard;
@@ -127,7 +128,7 @@ export function CanvasCardView({
       {card.kind === 'script' ? (
         <ScriptCardBody card={card} />
       ) : card.kind === 'shot' ? (
-        <ShotCardBody card={card} k={k} firstFramePending={firstFramePending} renderPending={renderPending} />
+        <ShotCardBody card={card} k={k} firstFramePending={firstFramePending} renderPending={renderPending} onSelectVersion={onSelectVersion} />
       ) : card.kind === 'character' ? (
         <CharacterCardBody card={card} lookPending={firstFramePending} />
       ) : card.kind === 'text' ? (
@@ -163,44 +164,9 @@ export function CanvasCardView({
         />
       )}
 
-      {(card.history?.length ?? 0) > 1 && (() => {
-        const hist = card.history!;
-        const found = hist.findIndex((h) => h.asset_id === card.asset_id);
-        // 当前 asset 不在历史里（老数据）就当作停在最新那一版
-        const idx = found < 0 ? hist.length - 1 : found;
-        const go = (to: number) => {
-          if (to < 0 || to >= hist.length || to === idx) return;
-          onSelectVersion(card.id, hist[to].asset_id);
-        };
-        return (
-          // stopPropagation：点切版按钮不该顺带选中 / 拖动这张卡
-          <span className="version-switch" onPointerDown={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              className="ver-btn"
-              aria-label="上一版成片"
-              title="上一版"
-              disabled={idx <= 0}
-              onClick={() => go(idx - 1)}
-            >
-              ‹
-            </button>
-            <span className="mono">
-              {idx + 1}/{hist.length}
-            </span>
-            <button
-              type="button"
-              className="ver-btn"
-              aria-label="下一版成片"
-              title="下一版"
-              disabled={idx >= hist.length - 1}
-              onClick={() => go(idx + 1)}
-            >
-              ›
-            </button>
-          </span>
-        );
-      })()}
+      {(card.kind === 'image' || card.kind === 'video') && (
+        <VersionSwitch card={card} onSelectVersion={onSelectVersion} />
+      )}
     </article>
   );
 }

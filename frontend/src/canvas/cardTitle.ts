@@ -30,9 +30,15 @@ export const KIND_ICON: Record<CardKind, string> = {
  * 勾选角色时读的就是这个标题，几张卡全叫「角色」就没法选。
  */
 export function cardTitle(card: CanvasCard): string {
+  // 镜头卡永远带上镜号：拆分镜给的标题是场景名（「隧道入口对峙」），光看名字
+  // 认不出这是第几镜。镜号 + 场景名一起显示，画布上一眼就知道顺序。
+  if (card.kind === 'shot') {
+    const no = readShot(card).shot_no;
+    const explicit = card.title?.trim();
+    return explicit ? `镜${no} · ${explicit}` : `镜 ${no}`;
+  }
   const explicit = card.title?.trim();
   if (explicit) return explicit;
-  if (card.kind === 'shot') return `镜 ${readShot(card).shot_no}`;
   if (card.kind === 'character') return readCharacter(card).name.trim() || KIND_LABEL[card.kind];
   return KIND_LABEL[card.kind];
 }

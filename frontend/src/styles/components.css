@@ -420,7 +420,7 @@ a { color: inherit; text-decoration: none; }
   z-index: var(--z-canvas-overlay);
 }
 .version-switch {
-  position: absolute; left: var(--space-2); bottom: var(--space-2);
+  position: absolute; left: var(--space-2); top: var(--space-2);
   height: 20px; padding: 0 4px;
   display: inline-flex; align-items: center; gap: 4px;
   background: rgba(8,8,10,.8); border: 1px solid var(--border-subtle);
