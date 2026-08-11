@@ -6,6 +6,7 @@ import { useTasks } from '@/api/queries';
 import { AssetTextBody } from '@/components/AssetTextBody';
 import { displayProgress } from '@/components/task/failure';
 import { cardTitle, KIND_ICON } from './cardTitle';
+import { CharacterCardBody } from './CharacterCardBody';
 import { ScriptCardBody } from './ScriptCardBody';
 import { ShotCardBody } from './ShotCardBody';
 
@@ -19,7 +20,7 @@ interface CanvasCardViewProps {
   /** 合成模式下的片段序号（从 1 起）；未入选为 0。序号即成片里的先后 */
   pickIndex: number;
   /**
-   * 这一镜的首帧正在出。
+   * 这张卡的图正在出（镜头卡的首帧、角色卡的定妆图）。
    *
    * 不走 card.task_id：那个字段是「这张卡自己的产物在跑」，出片那一步用的就是它，
    * 首帧任务借来占着，两件事就再也分不开了。
@@ -72,9 +73,9 @@ export function CanvasCardView({
   // text 产物没有可预览的画面，assetPreview 会给 null；卡片 kind 是建卡时定的，
   // 挡不住一张 image 卡上挂着一件 text 资产，所以判据取资产本身。
   const preview = asset ? assetPreview(asset) : null;
-  // 剧本与镜头的正文是用户自己写的文字，就地编辑；其余卡片的内容来自产物，
-  // 改它没有意义（要换内容走重跑）。
-  const editable = card.kind === 'script' || card.kind === 'shot';
+  // 剧本、镜头与角色的正文是用户自己写的文字，就地编辑；其余卡片的内容来自
+  // 产物，改它没有意义（要换内容走重跑）。
+  const editable = card.kind === 'script' || card.kind === 'shot' || card.kind === 'character';
 
   const className = [
     'canvas-card',
@@ -117,12 +118,15 @@ export function CanvasCardView({
 
       {pickIndex > 0 && <span className="pick-index mono">{pickIndex}</span>}
 
-      {/* 剧本与镜头排在媒体分支之前，且不读 asset：正文是文字，落到下面任何一条
-          <img>/<video> 分支都是一张裂图（DEM-78 已经为 text 产物修过一次）。 */}
+      {/* 剧本、镜头与角色排在媒体分支之前，且不读 asset：正文是文字，落到下面任何
+          一条 <img>/<video> 分支都是一张裂图（DEM-78 已经为 text 产物修过一次）。
+          角色卡自己的产物（定妆图）由 CharacterCardBody 单独取。 */}
       {card.kind === 'script' ? (
         <ScriptCardBody card={card} />
       ) : card.kind === 'shot' ? (
         <ShotCardBody card={card} k={k} firstFramePending={firstFramePending} renderPending={renderPending} />
+      ) : card.kind === 'character' ? (
+        <CharacterCardBody card={card} lookPending={firstFramePending} />
       ) : card.kind === 'text' ? (
         <div className="body">{card.text}</div>
       ) : pending ? (

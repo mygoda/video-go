@@ -36,11 +36,15 @@ const (
 	// CardKindShot 是镜头卡，结构化字段放在 Params（见 ShotParams），
 	// Refs 指回它所属的剧本卡。它是「花钱出片之前能改」的那个对象。
 	CardKindShot CardKind = "shot"
+	// CardKindCharacter 是角色卡，结构化外观描述放在 Params（见 CharacterParams），
+	// 定妆图就是这张卡自己的产物（AssetID）。它承载的是**跨镜头**的角色一致性：
+	// 同一份外观描述会被拼进每一镜的首帧 prompt。
+	CardKindCharacter CardKind = "character"
 )
 
 // KnownCardKinds 是全部合法的卡片类型，落库白名单以它为准。
 var KnownCardKinds = []CardKind{
-	CardKindText, CardKindImage, CardKindVideo, CardKindScript, CardKindShot,
+	CardKindText, CardKindImage, CardKindVideo, CardKindScript, CardKindShot, CardKindCharacter,
 }
 
 // Valid 报告该 kind 是否为已知类型。
@@ -147,13 +151,24 @@ type ShotParams struct {
 	// （「这一镜长什么样」），不是画布上另一个可以单独摆位、单独引用的对象，
 	// 所以它跟镜号、台词一样住在 params 里。
 	FirstFrameAssetID string `json:"first_frame_asset_id"`
+	// CharacterIDs 是这一镜里出场的角色卡 id。出首帧图时，这些角色卡的结构化
+	// 外观描述会被拼进 prompt —— 这是我们唯一能做的角色一致性手段（上游
+	// seedream 静默丢弃 images 参数，seedance 的 images[] 是首尾帧语义、
+	// 没有任何"参考图"入口，都已实测证否）。
+	//
+	// 逐镜选而不是"这条线上的角色全拼进去"：一部短剧里不是每一镜都有每个人，
+	// 把没出场的人的外观喂进 prompt，模型会照着把他画进画面。
+	//
+	// 不复用 Card.Refs：refs[0] 是这张镜头卡所属的剧本卡，重排版式（relayoutShots）
+	// 直接读它，往同一个数组里混进角色 id 等于让两件事共用一个位置约定。
+	CharacterIDs []string `json:"character_ids"`
 }
 
 // shotParamKeys 是 ShotParams 全部合法的 JSON key，用于拒绝未知字段。
 var shotParamKeys = map[string]struct{}{
 	"shot_no": {}, "description": {}, "dialogue": {}, "voice": {},
 	"duration_sec": {}, "camera": {}, "shot_size": {},
-	"first_frame_asset_id": {},
+	"first_frame_asset_id": {}, "character_ids": {},
 }
 
 // ParseShotParams 把 shot 卡的 params 解成 ShotParams 并校验。
@@ -168,6 +183,7 @@ var shotParamKeys = map[string]struct{}{
 // 空 params 直接放行：镜头卡可以先建出来再填（分镜那一步会分批回写）。
 func ParseShotParams(params map[string]any) (ShotParams, error) {
 	var sp ShotParams
+	sp.CharacterIDs = []string{}
 	if len(params) == 0 {
 		return sp, nil
 	}
@@ -207,6 +223,9 @@ func ParseShotParams(params map[string]any) (ShotParams, error) {
 			Key: "params.duration_sec", Message: "时长不能为负",
 		})
 	}
+	if sp.CharacterIDs == nil {
+		sp.CharacterIDs = []string{}
+	}
 	if len(fields) > 0 {
 		return sp, shotParamsError(fields)
 	}
@@ -217,6 +236,98 @@ func shotParamsError(fields []FieldError) error {
 	return &Error{
 		Code:        CodeInvalidParam,
 		Message:     "shot 卡的 params 不合法",
+		FieldErrors: fields,
+	}
+}
+
+// CharacterParams 是 character 卡放在 Card.Params 里的结构化外观描述。
+//
+// # 为什么拆成六个字段，而不是一段自由文本
+//
+// 这些字段的唯一去处是被拼进每一镜的首帧 prompt —— 那是我们做角色一致性
+// **仅有**的手段（上游 seedream 收到 images 参数会静默丢弃，seedance 的
+// images[] 只收 1~2 个纯字符串、是首尾帧语义，两边都没有"参考图"入口，
+// 都已实测证否）。一段自由文本用户改到第三镜就会漏掉「她扎马尾」，而一致性
+// 差在哪根本查不出来；拆开之后每一项在每一镜的 prompt 里都逐字出现，
+// 三张图不像时能直接指着看是哪一项没被模型吃进去。
+//
+// 字段选择跟着「模型认得的说法」走，不做枚举：上游吃的是自然语言。
+//
+// 所有字段恒定序列化（不加 omitempty），理由同 Card.Title：前端直接读，
+// 少一个字段就是一次白屏；空串是合法值（角色卡可以先建出来再一项项填）。
+//
+// 定妆图不在这里：它是这张卡自己的产物，就挂在 Card.AssetID 上，重出时
+// 走 Card.History。与镜头卡不同——镜头卡有首帧和成片两件产物要各占各的
+// 字段，角色卡只有一件。
+type CharacterParams struct {
+	// Name 是角色名，用来在 prompt 里指认「这一段说的是谁」，
+	// 也是卡片标题的兜底。
+	Name string `json:"name"`
+	// Age 是年龄与性别，如「二十五岁女性」。两者合成一项是因为它们在
+	// prompt 里本来就连着说，拆开会让用户填出「女」「25」这种拼不成句的碎片。
+	Age string `json:"age"`
+	// Build 是体貌身形，如「瘦高、鹅蛋脸」。
+	Build string `json:"build"`
+	// Hair 是发型发色，如「黑色高马尾」。
+	Hair string `json:"hair"`
+	// Outfit 是衣着，如「米色风衣、深色长裤」。
+	Outfit string `json:"outfit"`
+	// Extra 是其余会影响长相的东西：画风、配饰、气质。
+	//
+	// 画风放这里而不是单开一个字段：它其实是整条创作线的属性，不是这个角色的，
+	// 但上游没有全局风格入口，只能跟着人一起进 prompt。真要做成线级设定，
+	// 该改的是剧本卡，不是在角色卡上再加一个只对一个人生效的画风。
+	Extra string `json:"extra"`
+}
+
+// characterParamKeys 是 CharacterParams 全部合法的 JSON key。
+var characterParamKeys = map[string]struct{}{
+	"name": {}, "age": {}, "build": {}, "hair": {}, "outfit": {}, "extra": {},
+}
+
+// ParseCharacterParams 把 character 卡的 params 解成 CharacterParams 并校验。
+//
+// 未知 key 报错的理由同 ParseShotParams：拼 prompt 的代码逐字段读，把发型
+// 写进 `hairstyle`、`hair_style` 这类近义 key 会被安静存下来，而每一镜的
+// prompt 里就是少了发型那一句 —— 出来的三张图头发各不相同，且没有任何
+// 报错可查，只能人肉比对才发现。这正是这张卡要修的那个故障。
+//
+// 不校验必填：角色卡允许先建出来再一项项填，空 params 是合法状态。
+// 全空的角色拼不出外观描述，那一步自然什么也不加（见前端 characterLook）。
+func ParseCharacterParams(params map[string]any) (CharacterParams, error) {
+	var cp CharacterParams
+	if len(params) == 0 {
+		return cp, nil
+	}
+
+	var fields []FieldError
+	for key := range params {
+		if _, ok := characterParamKeys[key]; !ok {
+			fields = append(fields, FieldError{
+				Key:     "params." + key,
+				Message: "character 卡不认识这个字段，外观只认 name / age / build / hair / outfit / extra",
+			})
+		}
+	}
+	if len(fields) > 0 {
+		sort.Slice(fields, func(i, j int) bool { return fields[i].Key < fields[j].Key })
+		return cp, characterParamsError(fields)
+	}
+
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return cp, characterParamsError([]FieldError{{Key: "params", Message: err.Error()}})
+	}
+	if err := json.Unmarshal(raw, &cp); err != nil {
+		return cp, characterParamsError([]FieldError{{Key: "params", Message: err.Error()}})
+	}
+	return cp, nil
+}
+
+func characterParamsError(fields []FieldError) error {
+	return &Error{
+		Code:        CodeInvalidParam,
+		Message:     "character 卡的 params 不合法",
 		FieldErrors: fields,
 	}
 }

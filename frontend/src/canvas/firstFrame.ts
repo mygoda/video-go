@@ -1,6 +1,7 @@
-import type { CanvasCard, ShotParams, Task } from '@/api/types';
+import type { CanvasCard, CharacterParams, ShotParams, Task } from '@/api/types';
 import type { ModelCapabilitySchema } from '@/schema/types';
 import { api } from '@/api/endpoints';
+import { characterLook } from './character';
 import { readShot } from './shot';
 
 /**
@@ -20,14 +21,34 @@ export function firstFrameConcurrency(model: ModelCapabilitySchema): number {
 }
 
 /**
- * 出图 prompt 只取画面描述。
+ * 出图 prompt 只取画面描述，再把这一镜出场角色的外观逐条附在后面。
  *
  * **台词绝不能拼进来**：出图模型会把 prompt 里的话直接画成画面里的文字，
  * 首帧上就会浮出一行字。台词是出片那一步的输入（Seedance 靠它生成同步人声），
  * 两个 prompt 用途不同，共用一个拼法必然有一边是错的。
+ *
+ * ## 角色外观为什么走 prompt 文字，而不是喂参考图
+ *
+ * 上游没有参考图入口，这是实测出来的、不是推断（DEM-90）：出图模型传图片参数
+ * 会被**静默丢弃**（不报错，图照出，但跟参考图毫无关系）；出片模型的
+ * `images[]` 只收字符串、且只允许 1~2 个，语义是首帧/尾帧，不是"参考"。
+ * 所以文字层是我们唯一的手段，做到的是"像"，不是"同"。
+ *
+ * ## 为什么把外观放在描述后面
+ *
+ * 描述是这一镜要画的事，外观是画里的人长什么样。外观在前会把整句的主语抢走，
+ * 模型容易画成一张定妆照而不是这一镜的画面。
+ *
+ * 描述为空时整句返回空串（外观再全也不出图）：那时候没有"这一镜要画什么"，
+ * 只有一个人的长相，出来的东西和这一镜没有关系。shotsAwaitingFirstFrame
+ * 也以此为判据，改了它批量那一步会把没写描述的镜头一起排上去。
  */
-export function firstFramePrompt(shot: ShotParams): string {
-  return shot.description.trim();
+export function firstFramePrompt(shot: ShotParams, looks: CharacterParams[] = []): string {
+  const description = shot.description.trim();
+  if (!description) return '';
+  const cast = looks.map(characterLook).filter((look) => look !== '');
+  if (!cast.length) return description;
+  return `${description}\n\n画面中的角色外观（严格按此画，不要改动）：\n${cast.map((look) => `- ${look}`).join('\n')}`;
 }
 
 /** 这一镜有没有首帧产物。流程条推进与批量排队都以它为判据 */

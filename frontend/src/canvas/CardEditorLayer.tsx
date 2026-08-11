@@ -1,15 +1,19 @@
-import type { CanvasCard, ShotParams } from '@/api/types';
+import type { CanvasCard, CharacterParams, ShotParams } from '@/api/types';
 import type { Viewport } from './useViewport';
 import { cardTitle, KIND_ICON } from './cardTitle';
+import { CharacterEditor } from './CharacterCardBody';
 import { ScriptEditor } from './ScriptCardBody';
 import { ShotEditor } from './ShotCardBody';
 
 interface CardEditorLayerProps {
   card: CanvasCard;
   viewport: Viewport;
+  /** 这条创作线上的角色卡，镜头编辑器用它列出可勾选的出场角色 */
+  characters: CanvasCard[];
   onCancel(): void;
   onSaveScript(card: CanvasCard, text: string): void;
   onSaveShot(card: CanvasCard, shot: ShotParams): void;
+  onSaveCharacter(card: CanvasCard, c: CharacterParams): void;
 }
 
 /**
@@ -26,7 +30,15 @@ interface CardEditorLayerProps {
  * 再整体 `scale(k)`，视觉上就跟长在卡片上一模一样。平移缩放只改 viewport，
  * 这里每次渲染重算，编辑器自动跟着卡片走，不需要额外的同步机制。
  */
-export function CardEditorLayer({ card, viewport, onCancel, onSaveScript, onSaveShot }: CardEditorLayerProps) {
+export function CardEditorLayer({
+  card,
+  viewport,
+  characters,
+  onCancel,
+  onSaveScript,
+  onSaveShot,
+  onSaveCharacter,
+}: CardEditorLayerProps) {
   return (
     <div className="canvas-popover-layer">
       <section
@@ -44,8 +56,15 @@ export function CardEditorLayer({ card, viewport, onCancel, onSaveScript, onSave
         </div>
         {card.kind === 'script' ? (
           <ScriptEditor card={card} onSave={(text) => onSaveScript(card, text)} onCancel={onCancel} />
+        ) : card.kind === 'character' ? (
+          <CharacterEditor card={card} onSave={(c) => onSaveCharacter(card, c)} onCancel={onCancel} />
         ) : (
-          <ShotEditor card={card} onSave={(shot) => onSaveShot(card, shot)} onCancel={onCancel} />
+          <ShotEditor
+            card={card}
+            characters={characters}
+            onSave={(shot) => onSaveShot(card, shot)}
+            onCancel={onCancel}
+          />
         )}
       </section>
     </div>

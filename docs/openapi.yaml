@@ -2196,11 +2196,12 @@ components:
         id: { type: string }
         kind:
           type: string
-          enum: [text, image, video, script, shot]
+          enum: [text, image, video, script, shot, character]
           description: >-
             script 是剧本卡，正文在 text、历史版本在 params（形状见 ScriptParams）；
             shot 是镜头卡，结构化字段在 params（形状见 ShotParams），refs 指回
-            它所属的 script 卡。
+            它所属的 script 卡；character 是角色卡，结构化外观在 params（形状见
+            CharacterParams），定妆图就是这张卡自己的产物（asset_id）。
         x: { type: number }
         y: { type: number }
         w: { type: number }
@@ -2215,9 +2216,9 @@ components:
           type: object
           description: >-
             kind=shot 时形状固定为 ShotParams，kind=script 时固定为 ScriptParams，
-            两者多余的键都会被拒绝；其余 kind 不约束。**script 卡的 params 由服务端
-            维护，card.update 不接受直接改它**——改正文直接 patch text，服务端会把
-            旧正文追加成一个版本。
+            kind=character 时固定为 CharacterParams，三者多余的键都会被拒绝；
+            其余 kind 不约束。**script 卡的 params 由服务端维护，card.update
+            不接受直接改它**——改正文直接 patch text，服务端会把旧正文追加成一个版本。
           additionalProperties: { $ref: '#/components/schemas/JsonValue' }
         refs:
           type: array
@@ -2274,7 +2275,7 @@ components:
         kind=shot 的卡片 params 的形状。台词是**独立字段**，不能并进
         description：出片模型（Seedance 2.0）音画同步生成，台词进 prompt 就有
         同步人声，字幕也直接取这个字段，两者都要求台词能被单独拎出来。
-      required: [shot_no, description, dialogue, duration_sec, camera, shot_size, first_frame_asset_id, voice]
+      required: [shot_no, description, dialogue, duration_sec, camera, shot_size, first_frame_asset_id, voice, character_ids]
       properties:
         shot_no:
           type: integer
@@ -2317,6 +2318,55 @@ components:
             `mute`。台词字段本身照旧保留，字幕仍然取它。
 
             老卡片没有这个键，读出来是 `null`，行为与加开关之前一致。
+        character_ids:
+          type: array
+          items: { type: string }
+          description: >-
+            这一镜里出场的 character 卡 id。出首帧图时，这些角色卡的结构化外观
+            描述会被逐字段拼进 prompt —— 这是目前唯一可用的角色一致性手段
+            （上游 seedream 收到 images 参数会静默丢弃，seedance 的 images[]
+            只收 1~2 个纯字符串、是首尾帧语义，两边都没有"参考图"入口）。
+
+            **逐镜选而不是整条线通用**：一部短剧里不是每一镜都有每个人，把没
+            出场的人的外观喂进 prompt，模型会照着把他画进画面。
+
+            **不复用 refs**：refs[0] 是这张镜头卡所属的 script 卡，前端重排版式
+            直接读它。老卡片没有这个键，读出来是空数组。
+
+    CharacterParams:
+      type: object
+      description: >-
+        kind=character 的卡片 params 的形状：一份**结构化**的角色外观描述。
+
+        拆成字段而不是一段自由文本，是因为这些值的唯一去处是被逐字段拼进每一镜
+        的首帧图 prompt。自由文本改到第三镜就会漏掉某一项，而三张图不像时根本
+        查不出是漏了哪一项；拆开之后每一项在每一镜的 prompt 里都逐字出现。
+
+        定妆图不在这里：它是这张卡自己的产物，挂在 CanvasCard.asset_id 上，
+        重出走 history。角色卡只有一件产物，不存在镜头卡那种首帧 / 成片抢字段
+        的问题。
+
+        六个键之外一律拒绝：把发型写进 `hairstyle` 这类近义 key，在一个宽松接收
+        的实现里会被安静存下来，而拼 prompt 的代码读 `hair` 读到空串——三镜出来
+        的人头发各不相同，没有任何报错可查。
+      required: [name, age, build, hair, outfit, extra]
+      properties:
+        name:
+          type: string
+          description: 角色名。prompt 里用它指认「这一段说的是谁」，也是卡片标题的兜底
+        age:
+          type: string
+          description: >-
+            年龄与性别，如「二十五岁女性」。两者合成一项是因为它们在 prompt 里
+            本来就连着说，拆开会填出「女」「25」这种拼不成句的碎片
+        build: { type: string, description: 体貌身形，如「瘦高、鹅蛋脸」 }
+        hair: { type: string, description: 发型发色，如「黑色高马尾」 }
+        outfit: { type: string, description: 衣着，如「米色风衣、深色长裤」 }
+        extra:
+          type: string
+          description: >-
+            其余会影响长相的东西：画风、配饰、气质。画风放这里而不是单开字段——
+            它其实是整条创作线的属性，但上游没有全局风格入口，只能跟着人进 prompt。
 
     CanvasMessage:
       type: object

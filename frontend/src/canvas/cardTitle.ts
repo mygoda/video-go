@@ -1,4 +1,5 @@
 import type { CanvasCard, CardKind } from '@/api/types';
+import { readCharacter } from './character';
 import { readShot } from './shot';
 
 const KIND_LABEL: Record<CardKind, string> = {
@@ -7,6 +8,7 @@ const KIND_LABEL: Record<CardKind, string> = {
   video: '视频',
   script: '剧本',
   shot: '镜头',
+  character: '角色',
 };
 
 export const KIND_ICON: Record<CardKind, string> = {
@@ -15,6 +17,7 @@ export const KIND_ICON: Record<CardKind, string> = {
   video: '🎬',
   script: '📜',
   shot: '🎞',
+  character: '🧑',
 };
 
 /**
@@ -23,11 +26,13 @@ export const KIND_ICON: Record<CardKind, string> = {
  * 这里自动优先用它，不需要再改各个渲染点。
  *
  * 镜头卡兜底成「镜 N」而不是「镜头」：一屏十几张镜头卡全叫同一个名字，
- * 用户就没法在画布上认出这是第几镜。
+ * 用户就没法在画布上认出这是第几镜。角色卡同理兜底成角色名 —— 镜头编辑器里
+ * 勾选角色时读的就是这个标题，几张卡全叫「角色」就没法选。
  */
 export function cardTitle(card: CanvasCard): string {
   const explicit = card.title?.trim();
   if (explicit) return explicit;
   if (card.kind === 'shot') return `镜 ${readShot(card).shot_no}`;
+  if (card.kind === 'character') return readCharacter(card).name.trim() || KIND_LABEL[card.kind];
   return KIND_LABEL[card.kind];
 }

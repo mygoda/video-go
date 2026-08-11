@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import type { CanvasCard, CanvasOp, CanvasState, ShotParams } from '@/api/types';
+import type { CanvasCard, CanvasOp, CanvasState, CharacterParams, ShotParams } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
 import { qk, useCanvas, useMe, useModels, useProjects } from '@/api/queries';
@@ -23,6 +23,7 @@ import { FlowStatusBar } from '@/canvas/FlowStatusBar';
 import { ScriptVersionsPanel } from '@/canvas/ScriptVersionsPanel';
 import { ScriptRefinePanel } from '@/canvas/ScriptRefinePanel';
 import { activeScript, MAX_SHOTS } from '@/canvas/flow';
+import { cardTitle } from '@/canvas/cardTitle';
 import {
   firstFrameConcurrency,
   firstFramePrompt,
@@ -41,6 +42,17 @@ import {
   shotsAwaitingRender,
 } from '@/canvas/render';
 import type { ScriptVersion } from '@/canvas/script';
+import {
+  CHARACTER_CARD_H,
+  CHARACTER_CARD_W,
+  characterLookPrompt,
+  characterParams,
+  characterSlot,
+  charactersOf,
+  hasLookSheet,
+  readCharacter,
+  shotCharacters,
+} from '@/canvas/character';
 import { readShot, relayoutShots, shotParams, shotSlot, shotsOf, SHOT_CARD_H, SHOT_CARD_W } from '@/canvas/shot';
 import { toolbarPosition } from '@/canvas/toolbar';
 
@@ -146,15 +158,25 @@ export function CanvasPage() {
   const project = projects?.find((p) => p.id === projectId);
   const cards = canvas?.cards ?? [];
   const selected = cards.find((c) => c.id === selectedId) ?? null;
-  // 只有剧本与镜头有就地编辑器；卡片被删或换了类型时 editingId 可能指向一张
+  // 只有剧本、镜头与角色有就地编辑器；卡片被删或换了类型时 editingId 可能指向一张
   // 已经不该开编辑器的卡，这里一并兜住。
-  const editingCard = cards.find((c) => c.id === editingId && (c.kind === 'script' || c.kind === 'shot')) ?? null;
+  const editingCard =
+    cards.find(
+      (c) => c.id === editingId && (c.kind === 'script' || c.kind === 'shot' || c.kind === 'character'),
+    ) ?? null;
   const lineageIds = new Set(selected?.refs ?? []);
 
   // 流程条盯着的那一条创作线：选中的剧本（或选中镜头回溯到的剧本），
   // 没选就是最新的那份。加镜 / 删镜 / 调镜数都作用在它名下。
   const flowScript = useMemo(() => activeScript(cards, selectedId), [cards, selectedId]);
   const flowShots = useMemo(() => (flowScript ? shotsOf(cards, flowScript.id) : []), [cards, flowScript]);
+  // 这条线上的角色。镜头编辑器靠它列出可勾选的出场角色，所以取的是**这张镜头卡
+  // 自己所属的剧本**，而不是流程条盯着的那条线——编辑器开着的时候用户完全可能
+  // 去点了别的剧本卡，那时候勾选区不该跟着换一批人。
+  const editingCharacters = useMemo(
+    () => (editingCard?.kind === 'shot' && editingCard.refs.length ? charactersOf(cards, editingCard.refs[0]) : []),
+    [cards, editingCard],
+  );
 
   // 点一次「出首帧」会排上几镜。已经有图的、没写描述的都不算——前者重出要
   // 一张一张来，后者提交上去只会换回一次 400。
@@ -258,6 +280,109 @@ export function CanvasPage() {
     setSelectedId(card.id);
   }
 
+  /**
+   * 角色卡：挂在一张剧本卡名下（refs 指回剧本，血缘与镜头卡同一个约定），
+   * 建出来直接进编辑态——一张外观全空的角色卡什么也做不了，用户不该还要
+   * 自己找哪儿能填。
+   */
+  function addCharacterCard(): void {
+    if (!flowScript) return;
+    const at = characterSlot(flowScript, charactersOf(cards, flowScript.id).length);
+    const card: CanvasCard = {
+      id: `c_${Date.now().toString(36)}`,
+      kind: 'character',
+      x: at.x,
+      y: at.y,
+      w: CHARACTER_CARD_W,
+      h: CHARACTER_CARD_H,
+      z: cards.length + 1,
+      params: characterParams({ name: '', age: '', build: '', hair: '', outfit: '', extra: '' }),
+      refs: [flowScript.id],
+      history: [],
+      auto_placed: true,
+      created_at: new Date().toISOString(),
+    };
+    enqueue([{ type: 'card.create', card }], (prev) => ({ ...prev, cards: [...prev.cards, card] }));
+    setSelectedId(card.id);
+    setEditingId(card.id);
+  }
+
+  function saveCharacter(card: CanvasCard, c: CharacterParams): void {
+    setEditingId(null);
+    const params = characterParams(c);
+    enqueue([{ type: 'card.update', id: card.id, patch: { params } }], (prev) => ({
+      ...prev,
+      cards: prev.cards.map((x) => (x.id === card.id ? { ...x, params } : x)),
+    }));
+  }
+
+  /**
+   * 出这个角色的定妆图。
+   *
+   * **提交时带 cardId**，与首帧那一步刻意相反：角色卡只有一件产物，定妆图就是它，
+   * 让后端把资产写进 canvas_cards.asset_id 正好，重出还能白拿一份 history。
+   * 镜头卡不能这么做是因为它有首帧和成片两件产物，会互相覆盖。
+   */
+  async function runLookSheet(card: CanvasCard): Promise<void> {
+    if (!firstFrameModel || framesInFlight.has(card.id)) return;
+    await flush();
+    const current =
+      qc.getQueryData<CanvasState>(qk.canvas(projectId))?.cards.find((c) => c.id === card.id) ?? card;
+    const prompt = characterLookPrompt(readCharacter(current));
+    if (!prompt) {
+      toast('这个角色还没填外观，先写清发型衣着这些再出定妆图', 'danger');
+      return;
+    }
+    setFramesInFlight((prev) => new Set(prev).add(card.id));
+    try {
+      const res = await submitTask({
+        model: firstFrameModel,
+        prompt,
+        values: defaultValues(firstFrameModel),
+        inputs: {},
+        canvasId: projectId,
+        cardId: card.id,
+      });
+      if (!res.ok) {
+        toast(res.error.message, 'danger');
+        return;
+      }
+      const task = await waitForTask(res.taskId);
+      if (task.status !== 'succeeded') {
+        toast(task.error?.message ?? '定妆图没出来', 'danger');
+        return;
+      }
+      await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+    } finally {
+      setFramesInFlight((prev) => {
+        const next = new Set(prev);
+        next.delete(card.id);
+        return next;
+      });
+    }
+  }
+
+  /**
+   * 把某个出场角色的定妆图直接当作这一镜的首帧。
+   *
+   * 这是角色一致性的另一条路。**互斥的是这一镜的图槽，不是两条路本身**：
+   * character_ids 不因为用了定妆图而清空，"外观描述进 prompt"那条文字层始终
+   * 生效，再点一次"重出首帧"照样带着外观描述出图。但出片模型只有一个图片槽
+   * （seedance 的 images[] 只收 1~2 张、且是首尾帧语义），定妆图和重出的首帧
+   * 写的是同一个 params.first_frame_asset_id，谁后来谁占坑、可以互相覆盖回去：
+   * 用了定妆图，这一镜当下就没有属于自己的画面了。所以它是显式动作，不是默认行为。
+   */
+  function applyLookAsFirstFrame(card: CanvasCard): void {
+    const shot = readShot(card);
+    const source = shotCharacters(cards, shot.character_ids).find(hasLookSheet);
+    if (!source) {
+      toast('这一镜勾选的角色都还没有定妆图', 'danger');
+      return;
+    }
+    linkFirstFrame(card.id, source.asset_id ?? '');
+    toast(`已把「${cardTitle(source)}」的定妆图设成第 ${shot.shot_no} 镜的首帧`);
+  }
+
   function deleteSelected(): void {
     if (!selected) return;
     const id = selected.id;
@@ -319,6 +444,7 @@ export function CanvasPage() {
           shot_size: '',
           first_frame_asset_id: '',
           voice: null,
+          character_ids: [],
         }),
         refs: [script.id],
         history: [],
@@ -407,6 +533,17 @@ export function CanvasPage() {
   }
 
   /**
+   * 这一镜要拼进 prompt 的角色外观。
+   *
+   * 从缓存里现取角色卡而不是用渲染时那份：一批图要跑好几分钟，用户完全可能在
+   * 等图的时候把某个角色的衣着改了，后面几镜该用新的。
+   */
+  function looksFor(card: CanvasCard): CharacterParams[] {
+    const live = qc.getQueryData<CanvasState>(qk.canvas(projectId))?.cards ?? cards;
+    return shotCharacters(live, readShot(card).character_ids).map(readCharacter);
+  }
+
+  /**
    * 出一镜的首帧：提交、等它走到终态、把产物挂回这张卡。
    *
    * **提交时不带 cardId**：后端拿到 card_id 会在任务成功时把产物直接写进
@@ -422,7 +559,7 @@ export function CanvasPage() {
     try {
       const res = await submitTask({
         model,
-        prompt: firstFramePrompt(readShot(card)),
+        prompt: firstFramePrompt(readShot(card), looksFor(card)),
         values: defaultValues(model),
         inputs: {},
         canvasId: projectId,
@@ -703,6 +840,19 @@ export function CanvasPage() {
           </button>
           <button
             type="button"
+            className="btn btn-sm"
+            disabled={!flowScript}
+            title={
+              flowScript
+                ? '建一个角色：外观描述会拼进这条线每一镜的首帧 prompt'
+                : '先建一张剧本卡，角色挂在它名下'
+            }
+            onClick={addCharacterCard}
+          >
+            ＋ 角色
+          </button>
+          <button
+            type="button"
             className={`btn btn-sm${composing ? ' btn-primary' : ''}`}
             onClick={() => {
               setComposing((on) => !on);
@@ -791,7 +941,7 @@ export function CanvasPage() {
         <div className="canvas-overlay">
           {selected && (
             <div ref={setToolbarEl} className="card-toolbar" style={{ left: toolbar.left, top: toolbar.top }}>
-              {(selected.kind === 'script' || selected.kind === 'shot') && (
+              {(selected.kind === 'script' || selected.kind === 'shot' || selected.kind === 'character') && (
                 <button
                   type="button"
                   className="icon-btn"
@@ -832,22 +982,49 @@ export function CanvasPage() {
               <button
                 type="button"
                 className="icon-btn"
-                title={selected.kind === 'shot' ? '重出这一镜的首帧' : '重跑（片段重拍）'}
-                aria-label={selected.kind === 'shot' ? '重出首帧' : '重跑'}
-                // 重跑要拿模型重出一件产物：图片 / 视频卡是换一张产物，镜头卡是
-                // 换一张首帧。剧本的正文是用户写的，改它走就地编辑。
-                disabled={
+                title={
                   selected.kind === 'shot'
+                    ? '重出这一镜的首帧'
+                    : selected.kind === 'character'
+                      ? hasLookSheet(selected)
+                        ? '重出这个角色的定妆图'
+                        : '出这个角色的定妆图'
+                      : '重跑（片段重拍）'
+                }
+                aria-label={
+                  selected.kind === 'shot' ? '重出首帧' : selected.kind === 'character' ? '出定妆图' : '重跑'
+                }
+                // 重跑要拿模型重出一件产物：图片 / 视频卡是换一张产物，镜头卡是
+                // 换一张首帧，角色卡是换一张定妆图。剧本的正文是用户写的，
+                // 改它走就地编辑。
+                disabled={
+                  selected.kind === 'shot' || selected.kind === 'character'
                     ? !firstFrameModel || framesInFlight.has(selected.id)
                     : selected.kind !== 'image' && selected.kind !== 'video'
                 }
                 onClick={() => {
                   if (selected.kind === 'shot') void rerunFirstFrame(selected);
+                  else if (selected.kind === 'character') void runLookSheet(selected);
                   else setRerunOpen(true);
                 }}
               >
                 ↻
               </button>
+              {/* 「拿定妆图当首帧」单独一个按钮：它是角色一致性的第二条路，
+                  代价是这一镜没有属于自己的画面（图片槽只有一个），
+                  所以必须由用户点，不能默认发生。 */}
+              {selected.kind === 'shot' && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="拿这一镜出场角色的定妆图当首帧（会顶掉这一镜自己的画面）"
+                  aria-label="拿定妆图当首帧"
+                  disabled={!shotCharacters(cards, readShot(selected).character_ids).some(hasLookSheet)}
+                  onClick={() => applyLookAsFirstFrame(selected)}
+                >
+                  🧑
+                </button>
+              )}
               {/* 出片单独一个按钮，不跟 ↻ 挤在一起：一镜有两件产物，
                   「换一张首帧」和「重出这条片子」是两个价钱、两个等待长度。 */}
               {selected.kind === 'shot' && (
@@ -963,9 +1140,11 @@ export function CanvasPage() {
           <CardEditorLayer
             card={editingCard}
             viewport={viewport}
+            characters={editingCharacters}
             onCancel={() => setEditingId(null)}
             onSaveScript={saveScript}
             onSaveShot={saveShot}
+            onSaveCharacter={saveCharacter}
           />
         )}
       </div>

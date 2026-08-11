@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { CanvasCard, ShotParams } from '@/api/types';
 import { assetPreview } from '@/api/types';
 import { api } from '@/api/endpoints';
+import { cardTitle } from './cardTitle';
 import { readShot } from './shot';
 
 interface ShotCardBodyProps {
@@ -137,16 +138,27 @@ function ShotFrame({ firstFrameAssetId, videoAssetId, k, firstFramePending, rend
 
 interface ShotEditorProps {
   card: CanvasCard;
+  /** 这条创作线上全部角色卡，逐镜勾选谁出场 */
+  characters: CanvasCard[];
   onSave(shot: ShotParams): void;
   onCancel(): void;
 }
 
-export function ShotEditor({ card, onSave, onCancel }: ShotEditorProps) {
+export function ShotEditor({ card, characters, onSave, onCancel }: ShotEditorProps) {
   const [draft, setDraft] = useState(() => readShot(card));
   const id = (field: string) => `shot-${field}-${card.id}`;
 
   function set<K extends keyof ShotParams>(key: K, value: ShotParams[K]): void {
     setDraft((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function toggleCharacter(id: string): void {
+    setDraft((prev) => ({
+      ...prev,
+      character_ids: prev.character_ids.includes(id)
+        ? prev.character_ids.filter((x) => x !== id)
+        : [...prev.character_ids, id],
+    }));
   }
 
   return (
@@ -221,6 +233,32 @@ export function ShotEditor({ card, onSave, onCancel }: ShotEditorProps) {
         value={draft.dialogue}
         onChange={(e) => set('dialogue', e.target.value)}
       />
+
+      {/*
+        逐镜勾选出场角色，而不是"这条线上的角色全拼进每一镜"：一部短剧里不是
+        每一镜都有每个人，把没出场的人的外观喂进 prompt，模型会照着把他画进画面。
+
+        这条线上一个角色卡都没有时整块不渲染 —— 一个永远空着的勾选区只会让用户
+        以为功能坏了。建角色卡在顶栏。
+      */}
+      {characters.length > 0 && (
+        <>
+          <span className="card-editor-label">出场角色</span>
+          <div className="character-picker">
+            {characters.map((c) => (
+              <label key={c.id} className="character-pick">
+                <input
+                  type="checkbox"
+                  checked={draft.character_ids.includes(c.id)}
+                  onChange={() => toggleCharacter(c.id)}
+                />
+                {cardTitle(c)}
+              </label>
+            ))}
+          </div>
+          <span className="hint">勾中的角色，外观描述会逐项拼进这一镜的首帧图 prompt</span>
+        </>
+      )}
 
       {/*
         三个选项而不是一个勾选框：「跟随默认」是一个真实且不同的状态，
