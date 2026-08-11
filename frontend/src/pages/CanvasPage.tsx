@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import type { CanvasCard, CanvasOp, CanvasState, CharacterParams, ShotParams } from '@/api/types';
@@ -390,6 +390,23 @@ export function CanvasPage() {
     setEditingId((cur) => (cur === id ? null : cur));
     enqueue([{ type: 'card.delete', id }], (prev) => ({ ...prev, cards: prev.cards.filter((c) => c.id !== id) }));
   }
+
+  // Delete / Backspace 删除选中卡：画布工具里这是肌肉记忆，只有顶栏按钮太难发现。
+  // 用 ref 拿最新的 deleteSelected，监听只挂一次；在输入框/可编辑区里不拦截，
+  // 否则会吞掉正常的退格与删除。
+  const deleteSelectedRef = useRef(deleteSelected);
+  deleteSelectedRef.current = deleteSelected;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      deleteSelectedRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   /** 剧本卡：正文空着建出来，直接进编辑态，用户不用再找哪儿能写。 */
   function addScriptCard(): void {
@@ -1130,6 +1147,11 @@ export function CanvasPage() {
               onCollapsedChange={setDockCollapsed}
               rootRef={setDockEl}
               onRemoveRef={(id) => setDroppedRefs((prev) => [...prev, id])}
+              onGenerated={() => {
+                // 新剧本卡固定落在 (0,0)，视野没跟过去就等于「没生成」。生成后拉到全部内容。
+                const fresh = qc.getQueryData<CanvasState>(qk.canvas(projectId))?.cards ?? cards;
+                fit(bounds(fresh));
+              }}
             />
           )}
         </div>
