@@ -51,17 +51,25 @@ type scriptDraft struct {
 // refs 是用户在对话里勾选的卡片，它们的标题与正文作为上下文一起发上去——
 // 「多卡引用为下次输入」如果不真的进入提示词，那个勾选框就只是个装饰。
 //
-// modelID 是用户这次点名的模型，空串表示按默认规则选。
-func (s *server) generateScript(ctx context.Context, idea string, refs []domain.Card, modelID string) (scriptDraft, chatTrace, error) {
-	reply, trace, err := s.chatOnce(ctx, "script", modelID, scriptPrompt(idea, refs))
+// call 带着计费需要的身份与画布坐标；step 与 prompt 由本函数填，调用方
+// 不需要知道这一步在提示词里说了什么。返回的 bill 已经冻好钱，
+// 调用方必须结掉它（见 chatbill.go）；err 非 nil 时 bill 为 nil。
+func (s *server) generateScript(ctx context.Context, call chatCall, idea string, refs []domain.Card) (scriptDraft, chatTrace, *chatBill, error) {
+	call.step = "script"
+	call.prompt = scriptPrompt(idea, refs)
+
+	reply, trace, bill, err := s.chatOnce(ctx, call)
 	if err != nil {
-		return scriptDraft{}, trace, err
+		return scriptDraft{}, trace, nil, err
 	}
 	draft, err := parseScriptReply(reply)
 	if err != nil {
-		return scriptDraft{}, trace, err
+		// 解析不出剧本等于没拿到产物，钱当场退掉：把一笔已经注定要退的
+		// 冻结交回给调用方，只是把退款推迟到它想起来为止。
+		bill.refund(ctx, err)
+		return scriptDraft{}, trace, nil, err
 	}
-	return draft, trace, nil
+	return draft, trace, bill, nil
 }
 
 // scriptPrompt 拼出发给模型的那段话。
@@ -206,17 +214,21 @@ func scriptReply(draft scriptDraft, modelID string) string {
 // refineScript 按用户的一句指令让模型重写一遍剧本。
 //
 // 它与 generateScript 的差别只在提示词：产物同样是"第一行标题 + 正文"，
-// 因此解析、落卡、留版本全部复用同一套路径。
-func (s *server) refineScript(ctx context.Context, card domain.Card, instruction, modelID string) (scriptDraft, chatTrace, error) {
-	reply, trace, err := s.chatOnce(ctx, "refine", modelID, refinePrompt(card, instruction))
+// 因此解析、落卡、留版本、计费全部复用同一套路径。
+func (s *server) refineScript(ctx context.Context, call chatCall, card domain.Card, instruction string) (scriptDraft, chatTrace, *chatBill, error) {
+	call.step = "refine"
+	call.prompt = refinePrompt(card, instruction)
+
+	reply, trace, bill, err := s.chatOnce(ctx, call)
 	if err != nil {
-		return scriptDraft{}, trace, err
+		return scriptDraft{}, trace, nil, err
 	}
 	draft, err := parseScriptReply(reply)
 	if err != nil {
-		return scriptDraft{}, trace, err
+		bill.refund(ctx, err)
+		return scriptDraft{}, trace, nil, err
 	}
-	return draft, trace, nil
+	return draft, trace, bill, nil
 }
 
 // refinePrompt 拼出改写用的那段话。

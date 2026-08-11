@@ -68,18 +68,25 @@ type storyboardShot struct {
 }
 
 // generateStoryboard 调一次 chat 上游，把一份剧本拆成 shots 个镜头。
-func (s *server) generateStoryboard(ctx context.Context, script string, shots int, refs []domain.Card) ([]storyboardShot, chatTrace, error) {
-	// 空 modelID：分镜这一步没有给用户点名模型的位置，照旧走
+//
+// 返回的 bill 已经冻好钱，调用方必须结掉它（见 chatbill.go）。
+func (s *server) generateStoryboard(ctx context.Context, call chatCall, script string, shots int, refs []domain.Card) ([]storyboardShot, chatTrace, *chatBill, error) {
+	// call.modelID 留空：分镜这一步没有给用户点名模型的位置，照旧走
 	// AIGC_STORYBOARD_MODEL → 第一个启用的 chat 模型。
-	reply, trace, err := s.chatOnce(ctx, "storyboard", "", storyboardPrompt(script, shots, refs))
+	call.step = "storyboard"
+	call.modelID = ""
+	call.prompt = storyboardPrompt(script, shots, refs)
+
+	reply, trace, bill, err := s.chatOnce(ctx, call)
 	if err != nil {
-		return nil, trace, err
+		return nil, trace, nil, err
 	}
 	out, err := parseStoryboardShots(reply, shots)
 	if err != nil {
-		return nil, trace, err
+		bill.refund(ctx, err)
+		return nil, trace, nil, err
 	}
-	return out, trace, nil
+	return out, trace, bill, nil
 }
 
 // resolveShotCount 把请求里的镜头数收敛成一个合法值。
