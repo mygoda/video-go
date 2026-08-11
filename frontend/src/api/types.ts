@@ -162,7 +162,7 @@ export interface CanvasProject {
   updated_at: string;
 }
 
-export type CardKind = 'text' | 'image' | 'video' | 'script' | 'shot';
+export type CardKind = 'text' | 'image' | 'video' | 'script' | 'shot' | 'character';
 
 /**
  * kind=shot 的卡片 params 的形状（docs/openapi.yaml ShotParams）。
@@ -194,6 +194,39 @@ export interface ShotParams {
    * 就没了，history 也会把图和视频混成一串。
    */
   first_frame_asset_id: string;
+  /**
+   * 这一镜里出场的角色卡 id。出首帧图时，这些角色卡的结构化外观描述会被
+   * 逐字段拼进 prompt —— 这是目前唯一可用的角色一致性手段：上游出图模型收到
+   * 图片参数会静默丢弃，出片模型的图片槽是首尾帧语义、不是"参考图"，
+   * 两边都已实测证否（DEM-90）。
+   *
+   * 逐镜选而不是整条线通用：一部短剧里不是每一镜都有每个人，把没出场的人
+   * 喂进 prompt，模型会照着把他画进画面。
+   */
+  character_ids: string[];
+}
+
+/**
+ * kind=character 的卡片 params 的形状（docs/openapi.yaml CharacterParams）。
+ *
+ * 拆成字段而不是一段自由文本：这些值的唯一去处是被**逐字段**拼进每一镜的
+ * 首帧 prompt。自由文本改到第三镜就会漏掉某一项，而三张图不像时根本查不出
+ * 是漏了哪一项。后端同样按白名单校验，多写一个近义键整批 op 会被 400 顶回来。
+ *
+ * 定妆图不在这里：它是这张卡自己的产物，挂在 CanvasCard.asset_id 上。
+ */
+export interface CharacterParams {
+  name: string;
+  /** 年龄与性别，如「二十五岁女性」——两者在 prompt 里本来就连着说 */
+  age: string;
+  /** 体貌身形 */
+  build: string;
+  /** 发型发色 */
+  hair: string;
+  /** 衣着 */
+  outfit: string;
+  /** 画风、配饰、气质等其余会影响长相的东西 */
+  extra: string;
 }
 
 export interface CanvasCard {

@@ -456,12 +456,26 @@ a { color: inherit; text-decoration: none; }
 }
 .canvas-card.editing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow-popover); }
 
+/* 角色卡：定妆图是全身站姿，contain 不裁——16:9 的 cover 会把头和脚切掉 */
+.canvas-card .shot-frame.character-look img { object-fit: contain; }
+/* 外观逐项列出：三张图不像时，用户要能直接指着看是哪一项没被模型吃进去 */
+.canvas-card .character-traits { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.canvas-card .character-traits > div { display: flex; gap: var(--space-2); }
+.canvas-card .character-traits dt { flex: none; width: 2.5em; color: var(--text-tertiary); font-size: var(--text-2xs); }
+.canvas-card .character-traits dd { margin: 0; min-width: 0; color: var(--text-secondary); }
+
 .card-editor { padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
 .card-editor-row { display: flex; align-items: center; gap: var(--space-2); }
 .card-editor-row label, .card-editor-label { font-size: var(--text-2xs); color: var(--text-tertiary); white-space: nowrap; }
 .card-editor-row .input { height: var(--h-btn-sm); font-size: var(--text-xs); min-width: 0; }
 .card-editor-actions { display: flex; align-items: center; gap: var(--space-2); }
 .card-editor-actions .hint { margin-right: auto; }
+/* 逐镜勾选出场角色。横向流式排：一条线上通常两三个角色，竖排会把编辑器拉得很长 */
+.character-picker { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.character-pick {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--text-xs); color: var(--text-secondary); cursor: pointer;
+}
 
 /* 版本历史列表 */
 .version-row { padding: var(--space-2); border-radius: var(--radius-md); }

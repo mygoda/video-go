@@ -108,11 +108,11 @@ func marshalToMap(t *testing.T, v any) map[string]any {
 // 拼进 prompt（Seedance 靠它生成同步人声），字幕也没了来源。而字段少了一个
 // 又会让前端的镜头卡读到 undefined。
 func TestShotParamsJSONContract(t *testing.T) {
-	raw := marshalToMap(t, ShotParams{ShotNo: 1, Description: "雨夜的巷口"})
+	raw := marshalToMap(t, ShotParams{ShotNo: 1, Description: "雨夜的巷口", CharacterIDs: []string{}})
 
 	for _, key := range []string{
 		"shot_no", "description", "dialogue", "voice", "duration_sec", "camera", "shot_size",
-		"first_frame_asset_id",
+		"first_frame_asset_id", "character_ids",
 	} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("shot params 少了字段 %q：前端会读到 undefined", key)
@@ -197,6 +197,91 @@ func TestParseShotParams(t *testing.T) {
 		}
 		if len(de.FieldErrors) == 0 {
 			t.Errorf("ParseShotParams(%v) reported no field errors", bad)
+		}
+	}
+}
+
+// TestShotParamsCharacterIDsNeverNull 钉住出场角色恒定是数组，不是 null。
+//
+// 前端读它 .map 出这一镜的角色卡再拼首帧 prompt，读到 null 就是一次白屏。
+// 存量镜头卡的 params 里没有这个 key，所以"缺席解成空数组"是主路径而不是边角。
+func TestShotParamsCharacterIDsNeverNull(t *testing.T) {
+	for name, params := range map[string]map[string]any{
+		"空 params": nil,
+		"存量镜头卡":    {"shot_no": 1, "description": "推近"},
+		"显式给了空数组":  {"shot_no": 1, "character_ids": []any{}},
+	} {
+		sp, err := ParseShotParams(params)
+		if err != nil {
+			t.Fatalf("%s 被拒了: %v", name, err)
+		}
+		if sp.CharacterIDs == nil {
+			t.Errorf("%s 解出 nil；前端对它 .map，null 就是一次白屏", name)
+		}
+	}
+
+	sp, err := ParseShotParams(map[string]any{"shot_no": 1, "character_ids": []any{"c_1", "c_2"}})
+	if err != nil {
+		t.Fatalf("ParseShotParams: %v", err)
+	}
+	if len(sp.CharacterIDs) != 2 || sp.CharacterIDs[0] != "c_1" {
+		t.Errorf("character_ids = %v, want [c_1 c_2]", sp.CharacterIDs)
+	}
+}
+
+// TestCharacterParamsJSONContract 钉住外观的六个字段恒定出现。
+//
+// 这些字段的唯一去处是被逐字段拼进每一镜的首帧 prompt。少一个字段前端读到
+// undefined，拼出来的那一句就是 "发型：undefined"，直接进上游。
+func TestCharacterParamsJSONContract(t *testing.T) {
+	raw := marshalToMap(t, CharacterParams{Name: "林筱"})
+
+	for _, key := range []string{"name", "age", "build", "hair", "outfit", "extra"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("character params 少了字段 %q：前端会读到 undefined", key)
+		}
+	}
+	if raw["hair"] != "" {
+		t.Errorf("hair = %#v, want an empty string for a half-filled character", raw["hair"])
+	}
+}
+
+// TestParseCharacterParams 钉住外观字段不接受近义 key。
+//
+// 把发型写进 hairstyle / hair_style 在一个宽松接收的实现里会安静存下来，
+// 而拼 prompt 的代码读 hair 读到空串——三镜出来的人头发各不相同，
+// 且没有任何报错可查。这正是角色卡要修的那个故障本身。
+func TestParseCharacterParams(t *testing.T) {
+	// 空 params 放行：角色卡可以先建出来再一项项填。
+	if _, err := ParseCharacterParams(nil); err != nil {
+		t.Errorf("empty params were rejected: %v", err)
+	}
+
+	cp, err := ParseCharacterParams(map[string]any{
+		"name": "林筱", "age": "二十五岁女性", "build": "瘦高、鹅蛋脸",
+		"hair": "黑色高马尾", "outfit": "米色风衣、深色长裤", "extra": "二维赛璐璐插画风",
+	})
+	if err != nil {
+		t.Fatalf("a well-formed character was rejected: %v", err)
+	}
+	if cp.Name != "林筱" || cp.Hair != "黑色高马尾" || cp.Outfit != "米色风衣、深色长裤" {
+		t.Errorf("parsed character params = %+v", cp)
+	}
+
+	for _, bad := range []map[string]any{
+		{"name": "林筱", "hairstyle": "黑色高马尾"},
+		{"name": "林筱", "hair_style": "黑色高马尾"},
+		{"name": "林筱", "clothes": "米色风衣"},
+		{"name": "林筱", "appearance": "一整段自由文本"},
+	} {
+		_, err := ParseCharacterParams(bad)
+		var de *Error
+		if !errors.As(err, &de) || de.Code != CodeInvalidParam {
+			t.Errorf("ParseCharacterParams(%v) = %v, want invalid_param", bad, err)
+			continue
+		}
+		if len(de.FieldErrors) == 0 {
+			t.Errorf("ParseCharacterParams(%v) reported no field errors", bad)
 		}
 	}
 }

@@ -580,8 +580,9 @@ func insertCard(ctx context.Context, tx *sql.Tx, projectID string, c domain.Card
 	if !c.Kind.Valid() {
 		return invalidParam("unknown card kind " + string(c.Kind))
 	}
-	// shot 卡的 params 有 schema（见 domain.ShotParams），建卡这一刻就校验：
-	// kind 不在 card.update 的白名单里，一张 shot 卡建错了改不回来。
+	// shot / character 卡的 params 有 schema（见 domain.ShotParams、
+	// domain.CharacterParams），建卡这一刻就校验：kind 不在 card.update 的
+	// 白名单里，一张卡建错了改不回来。
 	switch c.Kind {
 	case domain.CardKindShot:
 		if _, err := domain.ParseShotParams(c.Params); err != nil {
@@ -589,6 +590,10 @@ func insertCard(ctx context.Context, tx *sql.Tx, projectID string, c domain.Card
 		}
 	case domain.CardKindScript:
 		if _, err := domain.ParseScriptParams(c.Params); err != nil {
+			return err
+		}
+	case domain.CardKindCharacter:
+		if _, err := domain.ParseCharacterParams(c.Params); err != nil {
 			return err
 		}
 	}
@@ -767,6 +772,11 @@ func patchByKind(ctx context.Context, tx *sql.Tx, projectID, cardID string, patc
 			return "", nil, errScriptParamsNotPatchable()
 		}
 		return scriptVersionSet(title, text.String, paramsRaw, newText)
+	case domain.CardKindCharacter:
+		if !patchesParams {
+			return "", nil, nil
+		}
+		return "", nil, checkCharacterParams(newParams)
 	}
 	return "", nil, nil
 }
@@ -820,22 +830,43 @@ func errScriptParamsNotPatchable() error {
 }
 
 // checkShotParams 按 domain.ShotParams 校验一份新的 params。
-//
-// patch 的值可能是 JSON 解出来的 map，也可能是调用方在 Go 侧直接构造的
-// domain.ShotParams。统一走一次 JSON 往返，两种形态在这里就没有分支了。
 func checkShotParams(value any) error {
-	params := map[string]any{}
-	if value != nil {
-		raw, err := json.Marshal(value)
-		if err != nil {
-			return invalidParam("card.params is not valid JSON: " + err.Error())
-		}
-		if err := json.Unmarshal(raw, &params); err != nil {
-			return invalidParam("card.params must be an object")
-		}
+	params, err := paramsMap(value)
+	if err != nil {
+		return err
 	}
-	_, err := domain.ParseShotParams(params)
+	_, err = domain.ParseShotParams(params)
 	return err
+}
+
+// checkCharacterParams 按 domain.CharacterParams 校验一份新的 params。
+func checkCharacterParams(value any) error {
+	params, err := paramsMap(value)
+	if err != nil {
+		return err
+	}
+	_, err = domain.ParseCharacterParams(params)
+	return err
+}
+
+// paramsMap 把 patch 里的 params 值 normalize 成 map。
+//
+// 值可能是 JSON 解出来的 map，也可能是调用方在 Go 侧直接构造的
+// domain.ShotParams 这类结构体。统一走一次 JSON 往返，两种形态在校验函数里
+// 就没有分支了。
+func paramsMap(value any) (map[string]any, error) {
+	params := map[string]any{}
+	if value == nil {
+		return params, nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, invalidParam("card.params is not valid JSON: " + err.Error())
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, invalidParam("card.params must be an object")
+	}
+	return params, nil
 }
 
 // cardPatchArg 把 patch 里的值转成可绑定的形态。

@@ -28,6 +28,14 @@ function asTriState(value: JsonValue | undefined): boolean | null {
 }
 
 /**
+ * 出场角色的 id 列表。非数组、或数组里混进非字符串的项，一律当作没选 ——
+ * 存量镜头卡的 params 里根本没有这个键，「缺席」是主路径不是边角。
+ */
+function asIdList(value: JsonValue | undefined): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
+/**
  * 读出一张 shot 卡的结构化字段。
  *
  * 缺字段兜底而不是报错：镜头卡允许先建出来再填（分镜那一步会分批回写），
@@ -44,6 +52,7 @@ export function readShot(card: CanvasCard): ShotParams {
     camera: asText(params.camera),
     shot_size: asText(params.shot_size),
     first_frame_asset_id: asText(params.first_frame_asset_id),
+    character_ids: asIdList(params.character_ids),
   };
 }
 
@@ -62,6 +71,7 @@ export function shotParams(shot: ShotParams): Record<string, JsonValue> {
     camera: shot.camera,
     shot_size: shot.shot_size,
     first_frame_asset_id: shot.first_frame_asset_id,
+    character_ids: shot.character_ids,
   };
 }
 
