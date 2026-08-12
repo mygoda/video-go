@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/aigc-pool/aigc-pool/internal/adapter/compose"
@@ -167,8 +168,46 @@ func (s *server) handleCanvasCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 让成片成为这条创作线下的一张 video 卡：refs 指回剧本、落在分镜簇下方。
+	// 卡先建好、把 cardID 塞进任务，任务成功走既有 publishCard → SetCardResult
+	// 回填 asset_id 并入 history（复用成片版本切换）。派生不出剧本时（选的不是
+	// 镜头卡）就不建卡，退回旧行为：只出一条任务。
+	var composedCardID *string
+	if sid := scriptOfPicks(snap.Cards, req.CardIDs); sid != "" {
+		// 这条线已经有成片卡就复用它：重合成 = 同一张卡的新一版，走 SetCardResult
+		// 进 history、可用 ‹n/m› 切回。一条线的成片卡 = 唯一那张 refs 回剧本的 video 卡。
+		if existing := composedCardOf(snap.Cards, sid); existing != "" {
+			composedCardID = &existing
+		} else {
+			x, y := composedCardSlot(snap.Cards, sid)
+			title := req.Title
+			if title == "" {
+				title = "成片"
+			}
+			card := domain.Card{
+				ID:        uid.New(),
+				Kind:      domain.CardKindVideo,
+				Title:     title,
+				X:         x,
+				Y:         y,
+				W:         240,
+				H:         180,
+				Z:         float64(len(snap.Cards) + 1),
+				Refs:      []string{sid},
+				History:   []domain.CardVersion{},
+				CreatedAt: s.now(),
+			}
+			if _, err := s.deps.Canvas.Apply(ctx, p.ID, snap.Revision, []domain.CanvasOp{{Type: domain.OpCardCreate, Card: &card}}); err != nil {
+				writeError(w, r, err)
+				return
+			}
+			cid := card.ID
+			composedCardID = &cid
+		}
+	}
+
 	// CanvasID 让这条任务出现在该画布的任务列表里；不带的话前端按 canvas_id
-	// 过滤时看不到自己刚提交的合成。
+	// 过滤时看不到自己刚提交的合成。CardID 让成片回填到上面那张 video 卡。
 	canvasID := p.ID
 	task, err := s.deps.Tasks.Create(ctx, domain.Task{
 		ID:            uid.New(),
@@ -181,6 +220,7 @@ func (s *server) handleCanvasCompose(w http.ResponseWriter, r *http.Request) {
 		Inputs:        inputs,
 		EstimatedCost: cost,
 		CanvasID:      &canvasID,
+		CardID:        composedCardID,
 		ClientToken:   req.ClientToken,
 		CreatedAt:     s.now(),
 	})
@@ -205,6 +245,48 @@ func (s *server) handleCanvasCompose(w http.ResponseWriter, r *http.Request) {
 	s.publishBalance(ctx, id.UserID)
 
 	writeJSON(w, http.StatusCreated, taskAccepted(task))
+}
+
+// composedCardOf 找这条线已有的成片卡 id：唯一那张 refs 回剧本的 video 卡。没有返回空。
+func composedCardOf(cards []domain.Card, scriptID string) string {
+	for _, c := range cards {
+		if c.Kind == domain.CardKindVideo && slices.Contains(c.Refs, scriptID) {
+			return c.ID
+		}
+	}
+	return ""
+}
+
+// scriptOfPicks 取被选合成的第一张镜头卡所属的剧本 id（refs[0]）。选的不是
+// 镜头卡、或没有 refs 时返回空——那时不给成片建卡。
+func scriptOfPicks(cards []domain.Card, ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	for _, c := range cards {
+		if c.ID == ids[0] && c.Kind == domain.CardKindShot && len(c.Refs) > 0 {
+			return c.Refs[0]
+		}
+	}
+	return ""
+}
+
+// composedCardSlot 给成片卡算落点：与剧本同一列、排在这条线所有分镜的最下方之下。
+func composedCardSlot(cards []domain.Card, scriptID string) (float64, float64) {
+	var sx, bottom float64
+	for _, c := range cards {
+		if c.ID == scriptID {
+			sx, bottom = c.X, c.Y+c.H
+		}
+	}
+	for _, c := range cards {
+		if c.Kind == domain.CardKindShot && slices.Contains(c.Refs, scriptID) {
+			if b := c.Y + c.H; b > bottom {
+				bottom = b
+			}
+		}
+	}
+	return sx, bottom + 64
 }
 
 // composeSegments 按 ids 的顺序取出每张卡片的产物资产 id。

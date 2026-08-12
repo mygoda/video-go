@@ -22,6 +22,7 @@ import { ComposeBar } from '@/canvas/ComposeBar';
 import { FlowStatusBar } from '@/canvas/FlowStatusBar';
 import { ScriptVersionsPanel } from '@/canvas/ScriptVersionsPanel';
 import { ScriptRefinePanel } from '@/canvas/ScriptRefinePanel';
+import { LineGroups } from '@/canvas/LineGroups';
 import { ShotRefinePanel } from '@/canvas/ShotRefinePanel';
 import { activeScript, MAX_SHOTS } from '@/canvas/flow';
 import { cardTitle } from '@/canvas/cardTitle';
@@ -973,6 +974,12 @@ export function CanvasPage() {
           className="canvas-world"
           style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.k})` }}
         >
+          {/* 创作线分组框 + 主连线，画在卡片之下（背景层，不挡拖拽）。用应用了拖拽
+              实时位置的 liveCards，框才跟着拖动的卡走。 */}
+          <LineGroups
+            cards={dragPos ? cards.map((c) => (c.id === dragPos.id ? { ...c, x: dragPos.x, y: dragPos.y } : c)) : cards}
+            activeScriptId={flowScript?.id ?? null}
+          />
           {cards.map((card) => {
             const live = dragPos?.id === card.id ? { ...card, x: dragPos.x, y: dragPos.y } : card;
             return (
