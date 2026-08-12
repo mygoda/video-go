@@ -427,6 +427,14 @@ a { color: inherit; text-decoration: none; }
   background: transparent; color: inherit; cursor: pointer; line-height: 1; font-size: 10px;
 }
 .line-toggle:hover { background: var(--bg-hover); }
+.line-rerun {
+  margin-left: 6px; padding: 0 7px; height: 17px;
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--border-default); border-radius: var(--radius-full);
+  background: transparent; color: var(--text-secondary); cursor: pointer;
+  font-size: var(--text-2xs); line-height: 1; pointer-events: auto;
+}
+.line-rerun:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--accent-border); }
 /* 折叠药丸：落在剧本原位，成员卡已隐藏。 */
 .line-pill {
   position: absolute; pointer-events: auto;

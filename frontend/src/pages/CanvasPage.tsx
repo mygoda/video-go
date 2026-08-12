@@ -23,6 +23,8 @@ import { FlowStatusBar } from '@/canvas/FlowStatusBar';
 import { ScriptVersionsPanel } from '@/canvas/ScriptVersionsPanel';
 import { ScriptRefinePanel } from '@/canvas/ScriptRefinePanel';
 import { LineGroups, loadCollapsed, saveCollapsed } from '@/canvas/LineGroups';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { uuid } from '@/lib/uuid';
 import { ShotRefinePanel } from '@/canvas/ShotRefinePanel';
 import { activeScript, MAX_SHOTS } from '@/canvas/flow';
 import { cardTitle } from '@/canvas/cardTitle';
@@ -144,6 +146,8 @@ export function CanvasPage() {
   // 批量出片在途。与 firstFrameBusy 分开两个 flag：这两批作用在不同的镜头上
   // （没图的 vs 有图没片的），互相拦住只会让用户以为界面卡了。
   const [renderBusy, setRenderBusy] = useState(false);
+  // 待确认「整组重跑」的创作线（剧本 id）；null = 没有弹窗。
+  const [rerunLineId, setRerunLineId] = useState<string | null>(null);
   const [rendersInFlight, setRendersInFlight] = useState<ReadonlySet<string>>(new Set());
   // 出片在途以真实任务状态为准，不能只靠上面的本地 Set：Set 随组件卸载清空，切走
   // 再回来就丢了「出片中」。出片任务带 card_id，从任务列表里对回镜头卡，离开画布
@@ -767,6 +771,40 @@ export function CanvasPage() {
   }
 
   /**
+   * 整组重跑：这条线**每一镜重出成片 → 再重合成**。不重拆分镜（保留镜头文字）。
+   * 每镜重出走 generateVideo（并发交给 runWithGate）；全出完后拿新成片重合成，
+   * 后端复用这条线的成片卡→追加新一版。多段 ~4 分钟视频、按镜计费，入口带确认弹窗。
+   */
+  async function runLineRerun(scriptId: string): Promise<void> {
+    if (!renderModel || renderBusy) return;
+    const shots = shotsOf(cards, scriptId).filter(hasFirstFrame);
+    if (!shots.length) {
+      toast('这条线还没有可出片的镜头（先给镜头出首帧）', 'danger');
+      return;
+    }
+    setRenderBusy(true);
+    try {
+      await flush();
+      await runWithGate(shots, renderConcurrency(renderModel), (card) => generateVideo(renderModel, card));
+      await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+      // 重合成：拿刚重出的成片重拼。后端复用这条线的成片卡（新一版，可切回）。
+      const fresh = qc.getQueryData<CanvasState>(qk.canvas(projectId))?.cards ?? cards;
+      const ids = shotsOf(fresh, scriptId).filter(hasVideo).map((c) => c.id);
+      if (ids.length >= 2) {
+        const script = fresh.find((c) => c.id === scriptId);
+        await api.compose(projectId, ids, script ? cardTitle(script) : '成片', uuid(), { mute: false, subtitles: true });
+        await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
+        await qc.invalidateQueries({ queryKey: qk.tasks });
+      }
+      toast('整组重跑完成：已重出成片' + (ids.length >= 2 ? '并重合成' : ''));
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : '整组重跑失败，请稍后重试', 'danger');
+    } finally {
+      setRenderBusy(false);
+    }
+  }
+
+  /**
    * 剧本正文的保存只发 text（必要时带上回退的标题）。版本是服务端在这次 patch
    * 里自己追加的，前端多发一个 params 就会被 400 顶回来（store/mysql 的
    * errScriptParamsNotPatchable）。也正因为版本在服务端生成，写完必须立刻把
@@ -1005,6 +1043,7 @@ export function CanvasPage() {
             activeScriptId={flowScript?.id ?? null}
             collapsed={collapsedLines}
             onToggle={toggleLine}
+            onRerun={setRerunLineId}
           />
           {cards.filter((card) => !hiddenByCollapse.has(card.id)).map((card) => {
             const live = dragPos?.id === card.id ? { ...card, x: dragPos.x, y: dragPos.y } : card;
@@ -1282,6 +1321,30 @@ export function CanvasPage() {
             onSaveCharacter={saveCharacter}
           />
         )}
+
+        {rerunLineId &&
+          (() => {
+            const script = cards.find((c) => c.id === rerunLineId);
+            const n = shotsOf(cards, rerunLineId).filter(hasFirstFrame).length;
+            const id = rerunLineId;
+            return (
+              <ConfirmDialog
+                title="整组重跑这条创作线"
+                body={
+                  <>
+                    将把「{script ? cardTitle(script) : ''}」这条线的 <b>{n}</b> 镜成片全部重出，再重合成一条片子。
+                    每段约几分钟、按镜计费；<b>不重拆分镜、不改镜头文字</b>。
+                  </>
+                }
+                confirmLabel="重跑"
+                onCancel={() => setRerunLineId(null)}
+                onConfirm={() => {
+                  setRerunLineId(null);
+                  void runLineRerun(id);
+                }}
+              />
+            );
+          })()}
       </div>
     </div>
   );
