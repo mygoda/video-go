@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { Task } from '@/api/types';
 import { assetPreview } from '@/api/types';
-import { useModels, useTasks } from '@/api/queries';
+import { useModels, useProjects, useTasks } from '@/api/queries';
 import { formatRelative } from '@/components/admin/format';
 
 const FILTERS = [
@@ -50,9 +50,17 @@ export function UserTasksPage() {
   const { data: imageModels } = useModels('image');
   const { data: videoModels } = useModels('video');
   const { data: textModels } = useModels('text');
+  const { data: projects } = useProjects();
+  const projectName = new Map((projects ?? []).map((p) => [p.id, p.name]));
   const modelName = new Map(
     [...(imageModels ?? []), ...(videoModels ?? []), ...(textModels ?? [])].map((m) => [m.id, m.name]),
   );
+
+  // 这条任务是哪个模块产生的：不带 canvas_id 的来自生成器；带的来自某条短剧（画布）。
+  const sourceOf = (t: Task): { label: string; canvas: boolean } =>
+    t.canvas_id
+      ? { label: `短剧 · ${projectName.get(t.canvas_id) ?? '未命名'}`, canvas: true }
+      : { label: '生成器', canvas: false };
 
   const rows = (tasks ?? []).filter((t) => {
     if (filter === 'all') return true;
@@ -107,6 +115,7 @@ export function UserTasksPage() {
               </div>
               <div className="task-main">
                 <div className="task-row-title">
+                  <span className={`task-source${sourceOf(t).canvas ? ' canvas' : ''}`}>{sourceOf(t).label}</span>
                   {MODALITY_LABEL[t.modality]}
                   {modelName.get(t.model_id) ? ` · ${modelName.get(t.model_id)}` : ''}
                 </div>

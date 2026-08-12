@@ -809,3 +809,5 @@ a { color: inherit; text-decoration: none; }
 .task-badge.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
 .task-badge.info { color: var(--accent-text); border-color: var(--accent-border); }
 .task-badge.muted { color: var(--text-tertiary); }
+.task-source { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: var(--radius-full); font-size: var(--text-2xs); font-weight: 400; color: var(--text-tertiary); border: 1px solid var(--border-subtle); vertical-align: 1px; }
+.task-source.canvas { color: var(--accent-text); border-color: var(--accent-border); background: var(--accent-subtle); }
