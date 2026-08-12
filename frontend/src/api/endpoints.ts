@@ -78,7 +78,7 @@ export const api = {
     return postForm<UploadResponse>('/uploads', form);
   },
 
-  tasks: () => request<Paged<Task>>('/tasks').then((r) => r.items),
+  tasks: () => request<Paged<Task>>('/tasks?limit=100').then((r) => r.items),
 
   activeTasks: () => request<Paged<Task>>('/tasks?status=active').then((r) => r.items),
 

@@ -2,11 +2,10 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCreditLedger, useMe, useModels, useTasks } from '@/api/queries';
-import type { CreditLedgerEntry, Task, TaskErrorCode } from '@/api/types';
+import type { CreditLedgerEntry, Task } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
 import { formatBytes } from '@/components/admin/format';
-import { presentFailure } from '@/components/task/failure';
 import { useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 
@@ -16,39 +15,60 @@ const MODALITY_LABEL: Record<Task['modality'], string> = {
   text: '文本生成',
 };
 
-/** 只有这几个 code 有专门文案，其余走不带后缀的「任务失败退回」，免得出现「退回 · 生成失败」这种绕口话 */
-const NAMED_ERROR_CODES = new Set<string>([
-  'invalid_param',
-  'upstream_rate_limited',
-  'content_rejected',
-  'insufficient_credit',
-]);
-
 /**
- * 把一条账本记录说成人话。hold / charge 的 reason 是内部记账串（"task hold"），
- * 一律不外显；模态与模型名靠 task_id 回查任务拿，查不到就退回泛化文案。
+ * 把账本聚成用户看得懂的消耗记录：同一任务的 hold（预扣）/ charge（结算）/ refund
+ * （退回）合并成一条，展示净额 + 是哪一步哪个模型；取消 / 失败的直接显示 refund 的
+ * 原因文案。管理员发放 / 调整各自一条。纯内部记账（无 task 的 hold/charge）不外显。
  */
-function describeEntry(
-  entry: CreditLedgerEntry,
+interface LedgerRow {
+  key: string;
+  label: string;
+  amount: number;
+  at: string;
+}
+
+function buildLedgerRows(
+  entries: CreditLedgerEntry[],
   taskById: Map<string, Task>,
   modelNameById: Map<string, string>,
-): string {
-  if (entry.type === 'topup') return '管理员发放';
-  if (entry.type === 'adjust') return '管理员调整';
-  if (entry.type === 'refund') {
-    const code = entry.reason?.split(/[:：]/).pop()?.trim() ?? '';
-    if (!NAMED_ERROR_CODES.has(code)) return '任务失败退回';
-    const p = presentFailure({ code: code as TaskErrorCode, message: '', retryable: false, charged: false });
-    return `任务失败退回 · ${p.title}`;
+): LedgerRow[] {
+  const rows: LedgerRow[] = [];
+  const byTask = new Map<string, CreditLedgerEntry[]>();
+  for (const e of entries) {
+    if (e.type === 'topup') {
+      rows.push({ key: e.id, label: '管理员发放', amount: e.amount, at: e.created_at });
+      continue;
+    }
+    if (e.type === 'adjust') {
+      rows.push({ key: e.id, label: `管理员调整${e.reason ? ` · ${e.reason}` : ''}`, amount: e.amount, at: e.created_at });
+      continue;
+    }
+    if (!e.task_id) continue; // 无任务的 hold/charge 是内部记账，不外显
+    const arr = byTask.get(e.task_id) ?? [];
+    arr.push(e);
+    byTask.set(e.task_id, arr);
   }
-
-  const task = entry.task_id ? taskById.get(entry.task_id) : undefined;
-  if (!task) return '任务消耗';
-  const parts = [MODALITY_LABEL[task.modality]];
-  const modelName = modelNameById.get(task.model_id);
-  if (modelName) parts.push(modelName);
-  const count = task.assets?.length ?? 0;
-  return `${parts.join(' · ')}${count > 1 ? ` ×${count}` : ''}`;
+  for (const [taskId, arr] of byTask) {
+    const net = arr.reduce((s, e) => s + e.amount, 0);
+    const refund = arr.find((e) => e.type === 'refund');
+    // 净额 0 又没退回 = 免费任务（如合成），没有消耗信息，不占版面
+    if (net === 0 && !refund) continue;
+    const at = arr.reduce((m, e) => (e.created_at > m ? e.created_at : m), arr[0].created_at);
+    const task = taskById.get(taskId);
+    const modality = task ? MODALITY_LABEL[task.modality] : '任务';
+    const model = task ? modelNameById.get(task.model_id) : undefined;
+    let label = `${modality}${model ? ` · ${model}` : ''}`;
+    if (refund) {
+      // refund.reason 已是人话（"任务已取消" / 失败原因），直接显示
+      label += ` · ${refund.reason?.trim() || '已退回'}`;
+    } else {
+      const count = task?.assets?.length ?? 0;
+      if (count > 1) label += ` ×${count}`;
+    }
+    rows.push({ key: taskId, label, amount: net, at });
+  }
+  rows.sort((a, b) => (a.at < b.at ? 1 : -1));
+  return rows;
 }
 
 export function ProfilePage() {
@@ -102,8 +122,8 @@ export function ProfilePage() {
   const modelNameById = new Map(
     [...(imageModels ?? []), ...(videoModels ?? []), ...(textModels ?? [])].map((m) => [m.id, m.name]),
   );
-  // hold/charge 是同一笔消费的两条记账，charge 结算为 0 时只是记账收尾，对用户没有信息量
-  const ledgerRows = (ledger?.items ?? []).filter((e) => !(e.type === 'charge' && e.amount === 0));
+  // 按任务聚合成一条条净消耗，取消 / 失败带原因；管理员发放 / 调整各自一条。
+  const ledgerRows = buildLedgerRows(ledger?.items ?? [], taskById, modelNameById);
 
   return (
     <main className="page" style={{ maxWidth: 900 }}>
@@ -134,12 +154,12 @@ export function ProfilePage() {
           <div className="panel">
             <h3>最近消耗</h3>
             <div className="ledger">
-              {ledgerRows.map((entry) => (
-                <div className="row" key={entry.id}>
-                  <span>{describeEntry(entry, taskById, modelNameById)}</span>
-                  <span className={`amt mono ${entry.amount < 0 ? 'minus' : 'plus'}`}>
-                    {entry.amount < 0 ? '−' : '+'}
-                    {Math.abs(entry.amount).toLocaleString()}
+              {ledgerRows.map((row) => (
+                <div className="row" key={row.key}>
+                  <span>{row.label}</span>
+                  <span className={`amt mono ${row.amount < 0 ? 'minus' : 'plus'}`}>
+                    {row.amount < 0 ? '−' : '+'}
+                    {Math.abs(row.amount).toLocaleString()}
                   </span>
                 </div>
               ))}
