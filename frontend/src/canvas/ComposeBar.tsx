@@ -89,6 +89,8 @@ export function ComposeBar({ projectId, picks, cards, onClear, onExit }: Compose
       setTaskId(res.task_id);
       await qc.invalidateQueries({ queryKey: qk.tasks });
       await qc.invalidateQueries({ queryKey: qk.me });
+      // 成片现在也是画布上的一张卡（后端建的），拉一次画布让它出现在创作线里
+      await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
     } catch (err) {
       // 合成的报错常常是可操作的（哪一段还没出片、哪一段缺时长），把第一条
       // field_error 顶到 toast 里，而不是只甩一句「参数校验未通过」。

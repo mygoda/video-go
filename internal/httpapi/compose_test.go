@@ -149,3 +149,35 @@ func TestComposeParamsSkipsEmptySubtitle(t *testing.T) {
 		t.Fatalf("静音开关应照常生效，实际：%v", params)
 	}
 }
+
+func TestScriptOfPicks(t *testing.T) {
+	cards := []domain.Card{
+		{ID: "s1", Kind: domain.CardKindScript},
+		{ID: "sh1", Kind: domain.CardKindShot, Refs: []string{"s1"}},
+		{ID: "sh2", Kind: domain.CardKindShot, Refs: []string{"s1"}},
+	}
+	if got := scriptOfPicks(cards, []string{"sh1", "sh2"}); got != "s1" {
+		t.Fatalf("scriptOfPicks = %q, want s1", got)
+	}
+	if got := scriptOfPicks(cards, []string{"s1"}); got != "" {
+		t.Errorf("非镜头卡应返回空，得到 %q", got)
+	}
+	if got := scriptOfPicks(cards, nil); got != "" {
+		t.Errorf("空 ids 应返回空，得到 %q", got)
+	}
+}
+
+func TestComposedCardSlot(t *testing.T) {
+	cards := []domain.Card{
+		{ID: "s1", Kind: domain.CardKindScript, X: 100, Y: 0, H: 200},
+		{ID: "sh1", Kind: domain.CardKindShot, Refs: []string{"s1"}, X: 100, Y: 424, H: 180},
+		{ID: "sh2", Kind: domain.CardKindShot, Refs: []string{"s1"}, X: 412, Y: 424, H: 180},
+	}
+	x, y := composedCardSlot(cards, "s1")
+	if x != 100 {
+		t.Errorf("x = %v, want 100（与剧本同列）", x)
+	}
+	if y != 668 { // 分镜最低边 424+180=604，+64
+		t.Errorf("y = %v, want 668（分镜最下之下 64）", y)
+	}
+}
