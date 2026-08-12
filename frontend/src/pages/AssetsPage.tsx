@@ -4,6 +4,7 @@ import type { Asset } from '@/api/types';
 import { assetPreview } from '@/api/types';
 import { useAssets, useMe } from '@/api/queries';
 import { AssetTextBody } from '@/components/AssetTextBody';
+import { ShortDramaList } from '@/pages/ShortDramaList';
 import { formatBytes, formatMediaDuration } from '@/components/admin/format';
 import { useAuthStore } from '@/stores/auth';
 
@@ -71,6 +72,10 @@ export function AssetsPage() {
         </span>
       </div>
 
+      {type === 'short' ? (
+        <ShortDramaList />
+      ) : (
+        <>
       {query.isLoading && <div className="empty">加载中…</div>}
 
       {page && page.items.length === 0 && (
@@ -119,6 +124,8 @@ export function AssetsPage() {
             {loadMore.isPending ? '加载中…' : '加载更多'}
           </button>
         </div>
+      )}
+        </>
       )}
     </main>
   );

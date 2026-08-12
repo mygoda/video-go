@@ -765,3 +765,25 @@ a { color: inherit; text-decoration: none; }
 .input::placeholder { color: var(--text-tertiary); }
 .input:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-subtle); }
 
+
+/* 短剧 tab：按项目分组、可展开，内部分「图片 / 分镜 / 成片」三块 */
+.short-list { display: flex; flex-direction: column; gap: var(--space-3); }
+.short-project { border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); overflow: hidden; background: var(--bg-surface); }
+.short-head {
+  width: 100%; display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4); text-align: left;
+}
+.short-head:hover { background: var(--bg-hover); }
+.short-toggle { color: var(--text-tertiary); width: 12px; }
+.short-cover { width: 44px; height: 44px; border-radius: var(--radius-md); object-fit: cover; flex: none; }
+.short-cover-empty { display: grid; place-items: center; background: var(--bg-inset, rgba(255,255,255,.04)); font-size: 20px; }
+.short-name { font-weight: 500; color: var(--text-primary); }
+.short-sub { margin-left: auto; color: var(--text-tertiary); font-size: var(--text-2xs); }
+.short-body { padding: var(--space-2) var(--space-4) var(--space-4); border-top: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: var(--space-4); }
+.short-section-label { font-size: var(--text-xs); color: var(--text-secondary); margin: var(--space-3) 0 var(--space-2); }
+.short-section-label .mono { color: var(--text-tertiary); }
+.short-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--space-2); }
+.short-thumb { position: relative; display: block; aspect-ratio: 16/9; border-radius: var(--radius-md); overflow: hidden; background: var(--bg-inset, rgba(255,255,255,.03)); }
+.short-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.short-thumb-cap { position: absolute; left: 6px; bottom: 6px; padding: 0 6px; height: 18px; display: inline-flex; align-items: center; background: rgba(8,8,10,.75); border-radius: var(--radius-full); font-size: var(--text-2xs); color: #fff; backdrop-filter: blur(6px); }
+.short-thumb-badge { position: absolute; right: 6px; top: 6px; width: 20px; height: 20px; display: grid; place-items: center; background: rgba(8,8,10,.75); border-radius: var(--radius-full); font-size: 10px; color: #fff; backdrop-filter: blur(6px); }
