@@ -7,6 +7,7 @@ import { RequireAuth } from './RequireAuth';
 import { LoginPage } from '@/pages/LoginPage';
 import { GeneratorPage } from '@/pages/GeneratorPage';
 import { AssetsPage } from '@/pages/AssetsPage';
+import { UserTasksPage } from '@/pages/UserTasksPage';
 import { AssetModal } from '@/pages/AssetModal';
 import { ProfilePage } from '@/pages/ProfilePage';
 import { ProjectListPage } from '@/pages/ProjectListPage';
@@ -61,6 +62,14 @@ export function AppRoutes() {
             element={
               <RequireAuth>
                 <AssetsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/tasks"
+            element={
+              <RequireAuth>
+                <UserTasksPage />
               </RequireAuth>
             }
           />

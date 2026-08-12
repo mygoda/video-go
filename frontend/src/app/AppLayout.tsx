@@ -7,6 +7,7 @@ const NAV = [
   { to: '/create/image', label: '生成器', match: '/create' },
   { to: '/projects', label: '画布', match: '/projects' },
   { to: '/assets', label: '资产', match: '/assets' },
+  { to: '/tasks', label: '任务', match: '/tasks' },
 ];
 
 export function AppLayout() {
