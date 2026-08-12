@@ -56,6 +56,8 @@ interface LineGroupsProps {
   collapsed: ReadonlySet<string>;
   /** 折叠 / 展开一条线。 */
   onToggle(scriptId: string): void;
+  /** 整组重跑一条线（每镜重出成片 + 重合成）。 */
+  onRerun(scriptId: string): void;
 }
 
 /**
@@ -66,7 +68,7 @@ interface LineGroupsProps {
  *
  * 只圈「有分镜或角色」的线：一张孤零零的剧本卡没有可归拢的东西，不画框。
  */
-export function LineGroups({ cards, activeScriptId, collapsed, onToggle }: LineGroupsProps) {
+export function LineGroups({ cards, activeScriptId, collapsed, onToggle, onRerun }: LineGroupsProps) {
   const groups = cards
     .filter((c) => c.kind === 'script')
     .map((script) => {
@@ -141,6 +143,17 @@ export function LineGroups({ cards, activeScriptId, collapsed, onToggle }: LineG
                 ▾
               </button>
               🎬 创作线 · {cardTitle(script)}
+              {g.shotCount > 0 && (
+                <button
+                  type="button"
+                  className="line-rerun"
+                  title="整组重跑：每镜重出成片，再重合成"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => onRerun(script.id)}
+                >
+                  ⟳ 重跑
+                </button>
+              )}
             </span>
           </div>
         );
