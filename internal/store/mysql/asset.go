@@ -173,7 +173,7 @@ func (r *assetRepo) Get(ctx context.Context, id string) (domain.Asset, error) {
 // 它没有可看的画面、下载和「做同款」对它也没有意义，混进瀑布流就是一块裂图。
 // 过滤放在 SQL 里而不是取出来再筛：游标分页按行数切页，筛在外面会让每页
 // 少几条、next_cursor 与实际条数对不上。显式传 type=text 仍然取得到。
-func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetType, composed *bool, taskID, cursor string, limit int) (store.Page[domain.Asset], error) {
+func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetType, composed, standalone *bool, taskID, cursor string, limit int) (store.Page[domain.Asset], error) {
 	if err := requireID("user id", userID); err != nil {
 		return store.Page[domain.Asset]{}, err
 	}
@@ -195,6 +195,16 @@ func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetTyp
 			where = append(where, expr+` IN (SELECT id FROM models WHERE protocol_family = 'compose')`)
 		} else {
 			where = append(where, expr+` NOT IN (SELECT id FROM models WHERE protocol_family = 'compose')`)
+		}
+	}
+	// standalone 区分「生成器直接产出」与「短剧创作过程中间物」：画布里产的图
+	// （首帧、定妆图）和单镜成片都来自带 canvas_id 的任务；生成器出的图 / 视频
+	// 与上传（无 task）都不带。true=只留独立产出，把短剧过程物挡在资产库外。
+	if standalone != nil {
+		if *standalone {
+			where = append(where, `(task_id IS NULL OR task_id IN (SELECT id FROM tasks WHERE canvas_id IS NULL))`)
+		} else {
+			where = append(where, `task_id IN (SELECT id FROM tasks WHERE canvas_id IS NOT NULL)`)
 		}
 	}
 	if taskID != "" {

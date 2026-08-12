@@ -44,7 +44,7 @@ func TestAssetRepoSoftDelete(t *testing.T) {
 
 	// 但所有读路径都要当它不存在。
 	requireCode(t, func() error { _, err := repo.Get(ctx, a.ID); return err }(), domain.CodeNotFound)
-	page, err := repo.List(ctx, f.userID, "", nil, "", "", 100)
+	page, err := repo.List(ctx, f.userID, "", nil, nil, "", "", 100)
 	requireNoErr(t, err, "list assets")
 	for _, item := range page.Items {
 		if item.ID == a.ID {
@@ -222,7 +222,7 @@ func TestAssetRepoListAndVariants(t *testing.T) {
 	seen := map[string]bool{}
 	cursor := ""
 	for page := 0; page < 10; page++ {
-		p, err := repo.List(ctx, f.userID, "", nil, "", cursor, 2)
+		p, err := repo.List(ctx, f.userID, "", nil, nil, "", cursor, 2)
 		requireNoErr(t, err, "list assets")
 		for _, a := range p.Items {
 			if seen[a.ID] {
@@ -240,7 +240,7 @@ func TestAssetRepoListAndVariants(t *testing.T) {
 	}
 
 	// 垃圾游标降级成第一页。
-	p, err := repo.List(ctx, f.userID, "", nil, "", "!!!garbage!!!", 100)
+	p, err := repo.List(ctx, f.userID, "", nil, nil, "", "!!!garbage!!!", 100)
 	requireNoErr(t, err, "list with garbage cursor")
 	if len(p.Items) != total {
 		t.Errorf("garbage cursor returned %d assets, want %d", len(p.Items), total)
@@ -253,7 +253,7 @@ func TestAssetRepoListAndVariants(t *testing.T) {
 	}
 
 	// 类型过滤：库里这批都是 image，问 video 就该是空的。
-	videos, err := repo.List(ctx, f.userID, domain.AssetTypeVideo, nil, "", "", 100)
+	videos, err := repo.List(ctx, f.userID, domain.AssetTypeVideo, nil, nil, "", "", 100)
 	requireNoErr(t, err, "list videos")
 	if len(videos.Items) != 0 {
 		t.Errorf("type filter matched %d assets, want 0", len(videos.Items))

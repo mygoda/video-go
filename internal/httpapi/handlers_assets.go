@@ -21,7 +21,7 @@ func (s *server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	var typ domain.AssetType
-	var composed *bool
+	var composed, standalone *bool
 	switch v := q.Get("type"); v {
 	case "", "all":
 	case "short":
@@ -30,19 +30,23 @@ func (s *server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		yes := true
 		composed = &yes
 	case string(domain.AssetTypeVideo):
-		// 视频 = 素材片：把成品（短剧）排除出去
+		// 视频 = 生成器直接产出的独立视频，排除短剧创作过程物（画布单镜成片等）
 		typ = domain.AssetTypeVideo
-		no := false
-		composed = &no
-	case string(domain.AssetTypeImage),
-		string(domain.AssetTypeAudio), string(domain.AssetTypeText):
+		only := true
+		standalone = &only
+	case string(domain.AssetTypeImage):
+		// 图片 = 生成器直接产出的独立图片，排除画布里的首帧 / 定妆图等过程物
+		typ = domain.AssetTypeImage
+		only := true
+		standalone = &only
+	case string(domain.AssetTypeAudio), string(domain.AssetTypeText):
 		typ = domain.AssetType(v)
 	default:
 		writeError(w, r, errInvalid("type 取值非法: %s", v))
 		return
 	}
 
-	page, err := s.deps.Assets.List(r.Context(), id.UserID, typ, composed, q.Get("task_id"), cursor, limit)
+	page, err := s.deps.Assets.List(r.Context(), id.UserID, typ, composed, standalone, q.Get("task_id"), cursor, limit)
 	if err != nil {
 		writeError(w, r, err)
 		return

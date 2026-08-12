@@ -144,7 +144,7 @@ type UploadRepo interface {
 type AssetRepo interface {
 	Create(ctx context.Context, a domain.Asset) (domain.Asset, error)
 	Get(ctx context.Context, id string) (domain.Asset, error)
-	List(ctx context.Context, userID string, typ domain.AssetType, composed *bool, taskID, cursor string, limit int) (Page[domain.Asset], error)
+	List(ctx context.Context, userID string, typ domain.AssetType, composed, standalone *bool, taskID, cursor string, limit int) (Page[domain.Asset], error)
 	ListByTask(ctx context.Context, taskID string) ([]domain.Asset, error)
 	Delete(ctx context.Context, id string) error
 	AddLineage(ctx context.Context, edges []domain.LineageEdge) error

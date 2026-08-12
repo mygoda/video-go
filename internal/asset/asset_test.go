@@ -350,7 +350,7 @@ func (f *fakeAssets) Create(_ context.Context, a domain.Asset) (domain.Asset, er
 func (f *fakeAssets) Get(context.Context, string) (domain.Asset, error) {
 	return domain.Asset{}, &domain.Error{Code: domain.CodeNotFound}
 }
-func (f *fakeAssets) List(context.Context, string, domain.AssetType, *bool, string, string, int) (store.Page[domain.Asset], error) {
+func (f *fakeAssets) List(context.Context, string, domain.AssetType, *bool, *bool, string, string, int) (store.Page[domain.Asset], error) {
 	return store.Page[domain.Asset]{}, nil
 }
 func (f *fakeAssets) ListByTask(context.Context, string) ([]domain.Asset, error) { return nil, nil }
