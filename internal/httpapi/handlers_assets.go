@@ -21,9 +21,20 @@ func (s *server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	var typ domain.AssetType
+	var composed *bool
 	switch v := q.Get("type"); v {
 	case "", "all":
-	case string(domain.AssetTypeImage), string(domain.AssetTypeVideo),
+	case "short":
+		// 短剧 = 成品：合成产出的视频（compose 家族模型）
+		typ = domain.AssetTypeVideo
+		yes := true
+		composed = &yes
+	case string(domain.AssetTypeVideo):
+		// 视频 = 素材片：把成品（短剧）排除出去
+		typ = domain.AssetTypeVideo
+		no := false
+		composed = &no
+	case string(domain.AssetTypeImage),
 		string(domain.AssetTypeAudio), string(domain.AssetTypeText):
 		typ = domain.AssetType(v)
 	default:
@@ -31,7 +42,7 @@ func (s *server) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, err := s.deps.Assets.List(r.Context(), id.UserID, typ, q.Get("task_id"), cursor, limit)
+	page, err := s.deps.Assets.List(r.Context(), id.UserID, typ, composed, q.Get("task_id"), cursor, limit)
 	if err != nil {
 		writeError(w, r, err)
 		return

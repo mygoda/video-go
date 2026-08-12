@@ -38,9 +38,9 @@ export function LoginPage() {
       <form className="auth" onSubmit={submit}>
         <div className="auth-logo">
           <span className="logo-mark" style={{ width: 28, height: 28, fontSize: 'var(--text-sm)' }}>
-            A
+            D
           </span>
-          <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semi)' }}>AIGC Pool</span>
+          <span style={{ fontSize: 'var(--text-md)', fontWeight: 'var(--weight-semi)' }}>dreamVideo</span>
         </div>
 
         <h1>{mode === 'login' ? '开始创作' : '创建账号'}</h1>
