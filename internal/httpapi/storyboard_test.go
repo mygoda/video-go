@@ -91,7 +91,7 @@ func TestParseStoryboardShots(t *testing.T) {
 // 镜头数写进提示词而不是"拆满再砍"：砍掉的镜头 token 已经花过，而且砍掉的
 // 往往正是结尾。台词那条同理关键——模型的默认写法是把对白塞进画面描述。
 func TestStoryboardPromptShotCount(t *testing.T) {
-	prompt := storyboardPrompt("雨夜重逢", 7, nil)
+	prompt := storyboardPrompt("雨夜重逢", 7, nil, false)
 	if !strings.Contains(prompt, "正好拆 7 个镜头") {
 		t.Errorf("requested shot count never made it into the prompt:\n%s", prompt)
 	}
@@ -103,6 +103,15 @@ func TestStoryboardPromptShotCount(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "雨夜重逢") {
 		t.Error("the script never made it into the prompt")
+	}
+	// 没传图时不该出现看图指令；传图时必须要求「与这张图保持一致」，
+	// 否则视觉模型会把参考图当摆设、各镜换一套人设。
+	if strings.Contains(prompt, "参考图") {
+		t.Error("text-only storyboard prompt should not mention a reference image")
+	}
+	withImg := storyboardPrompt("雨夜重逢", 7, nil, true)
+	if !strings.Contains(withImg, "参考图") || !strings.Contains(withImg, "保持一致") {
+		t.Errorf("image-grounded prompt lost the consistency instruction:\n%s", withImg)
 	}
 }
 

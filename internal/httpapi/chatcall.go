@@ -27,12 +27,14 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/aigc-pool/aigc-pool/internal/adapter"
+	"github.com/aigc-pool/aigc-pool/internal/asset"
 	"github.com/aigc-pool/aigc-pool/internal/capability"
 	"github.com/aigc-pool/aigc-pool/internal/domain"
 	"github.com/aigc-pool/aigc-pool/internal/uid"
@@ -148,9 +150,16 @@ func (s *server) userChatModel(ctx context.Context, id string) (domain.ModelConf
 // 调用先垫一笔钱，再靠退款还回去。冻结压到 driver.Invoke 的**前一行**，
 // 「余额不够时上游根本不会被调用」这条才是结构上成立的，而不是靠时序侥幸。
 func (s *server) chatOnce(ctx context.Context, call chatCall) (string, chatTrace, *chatBill, error) {
-	model, err := s.chatModel(ctx, call.modelID)
-	if err != nil {
-		return "", chatTrace{}, nil, err
+	model := domain.ModelConfig{}
+	if call.model != nil {
+		// 服务端已选好模型（如传图强制走视觉模型），跳过选型与 visibility 校验。
+		model = *call.model
+	} else {
+		var err error
+		model, err = s.chatModel(ctx, call.modelID)
+		if err != nil {
+			return "", chatTrace{}, nil, err
+		}
 	}
 	provider, err := s.deps.Providers.Get(ctx, model.ProviderID)
 	if err != nil {
@@ -182,6 +191,8 @@ func (s *server) chatOnce(ctx context.Context, call chatCall) (string, chatTrace
 		UpstreamModel:  model.UpstreamModel,
 		Prompt:         call.prompt,
 		Params:         defaultParams(schema),
+		Inputs:         call.inputs,
+		Blobs:          chatBlobReader{s.deps.Blobs},
 		Credential:     credential,
 		IdempotencyKey: call.step + "-" + uid.Token(8),
 	}
@@ -279,4 +290,18 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// chatBlobReader 把 asset.Store 适配成 adapter.BlobReader，供内联素材（识图的
+// 那张图）走 mapping 的 inline 规则读原始字节。与 executor 里那份同构，只是
+// 同步 chat 链路不经 worker，得在这一层自己拿一个。
+type chatBlobReader struct{ store asset.Store }
+
+func (b chatBlobReader) ReadBlob(ctx context.Context, storageKey string) ([]byte, error) {
+	rc, _, err := b.store.Get(ctx, storageKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
 }

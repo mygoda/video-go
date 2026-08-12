@@ -103,7 +103,7 @@ func TestStoryboardTaskPromptStoresScriptExcerpt(t *testing.T) {
 	ctx := context.Background()
 
 	const script = "第一场 巷口，夜。老张撑着伞站在路灯下。"
-	_, _, bill, err := f.srv.generateStoryboard(ctx, f.call(), script, 1, nil)
+	_, _, bill, err := f.srv.generateStoryboard(ctx, f.call(), script, 1, nil, nil)
 	if err != nil {
 		t.Fatalf("拆分镜失败：%v", err)
 	}
@@ -117,7 +117,7 @@ func TestStoryboardTaskPromptStoresScriptExcerpt(t *testing.T) {
 
 	// 整篇剧本远长于 storyboardInputRunes：这一列只用来认人，不该装下一份剧本。
 	long := strings.Repeat("镜", storyboardInputRunes+50)
-	_, _, bill2, err := f.srv.generateStoryboard(ctx, f.call(), long, 1, nil)
+	_, _, bill2, err := f.srv.generateStoryboard(ctx, f.call(), long, 1, nil, nil)
 	if err != nil {
 		t.Fatalf("拆长剧本失败：%v", err)
 	}
