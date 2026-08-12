@@ -177,6 +177,58 @@ func (r *canvasRepo) DeleteProject(ctx context.Context, id string) error {
 	return nil
 }
 
+// ListTrashedProjects 列出用户软删掉的项目（回收站）。按删除时间倒序，最近删的
+// 在最前。回收站条目通常不多，不做游标分页——真删几百个项目才需要，YAGNI。
+func (r *canvasRepo) ListTrashedProjects(ctx context.Context, userID string) ([]domain.Project, error) {
+	if err := requireID("user id", userID); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+projectColumns+` FROM projects p
+		 WHERE p.user_id = ? AND p.deleted_at IS NOT NULL
+		 ORDER BY p.deleted_at DESC, p.id DESC LIMIT 200`, // ponytail: 200 上限，回收站不分页
+		userID)
+	if err != nil {
+		return nil, wrap("list trashed projects", err)
+	}
+	defer rows.Close()
+
+	var items []domain.Project
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, wrap("scan project", err)
+		}
+		items = append(items, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrap("list trashed projects", err)
+	}
+	return items, nil
+}
+
+// RestoreProject 把软删的项目恢复（清空 deleted_at）。按 user_id 限定归属：
+// 找不到或不属于该用户都当 not found，不泄露别人有没有这个 id。
+func (r *canvasRepo) RestoreProject(ctx context.Context, userID, id string) error {
+	if err := requireID("project id", id); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE projects SET deleted_at = NULL WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL`,
+		id, userID)
+	if err != nil {
+		return wrap("restore project", err)
+	}
+	n, err := affected(res, "restore project")
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return notFound("project", id)
+	}
+	return nil
+}
+
 const cardColumns = `id, kind, title, x, y, w, h, z, task_id, asset_id, ` + "`text`" + `,
 	model_id, prompt, params, refs, history, auto_placed, created_at`
 

@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
-import { useCreditLedger, useMe, useModels, useTasks } from '@/api/queries';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useCreditLedger, useMe, useModels, useTasks, useTrashedProjects } from '@/api/queries';
+import { qk } from '@/api/queries';
 import type { CreditLedgerEntry, Task } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
@@ -84,6 +85,17 @@ export function ProfilePage() {
   const { data: textModels } = useModels('text');
   const navigate = useNavigate();
   const qc = useQueryClient();
+
+  const { data: trashed } = useTrashedProjects();
+  const restore = useMutation({
+    mutationFn: (id: string) => api.restoreProject(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.trashedProjects });
+      void qc.invalidateQueries({ queryKey: qk.projects });
+      toast('已恢复');
+    },
+    onError: () => toast('恢复失败，请重试'),
+  });
 
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -229,6 +241,30 @@ export function ProfilePage() {
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 'var(--space-5)' }}>
+        <h3>回收站</h3>
+        {trashed && trashed.length > 0 ? (
+          <div className="trash-list">
+            {trashed.map((p) => (
+              <div className="trash-row" key={p.id}>
+                <span className="trash-name">{p.name || '未命名短剧'}</span>
+                <span className="hint mono">{p.card_count} 卡</span>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => restore.mutate(p.id)}
+                  disabled={restore.isPending}
+                >
+                  恢复
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="hint">回收站是空的。删除的短剧会移到这里，其资源随之隐藏，可随时恢复。</p>
+        )}
       </div>
     </main>
   );

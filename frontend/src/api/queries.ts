@@ -10,6 +10,7 @@ export const qk = {
   tasks: ['tasks'] as const,
   assets: (type: string) => ['assets', type] as const,
   projects: ['projects'] as const,
+  trashedProjects: ['projects', 'trashed'] as const,
   canvas: (id: string) => ['canvas', id] as const,
   adminProviders: ['admin', 'providers'] as const,
   adminModels: ['admin', 'models'] as const,
@@ -48,6 +49,10 @@ export function useCreditLedger() {
 
 export function useProjects() {
   return useQuery({ queryKey: qk.projects, queryFn: api.projects });
+}
+
+export function useTrashedProjects() {
+  return useQuery({ queryKey: qk.trashedProjects, queryFn: api.trashedProjects });
 }
 
 export function useCanvas(projectId: string) {

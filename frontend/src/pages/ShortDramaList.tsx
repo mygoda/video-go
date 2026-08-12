@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 import type { CanvasProject } from '@/api/types';
 import { api } from '@/api/endpoints';
 import { qk, useProjects } from '@/api/queries';
 import { readShot } from '@/canvas/shot';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { toast } from '@/stores/toast';
 
 const thumbURL = (id: string) => `/api/assets/${id}/content?variant=thumb_512`;
 const posterURL = (id: string) => `/api/assets/${id}/content?variant=poster`;
@@ -38,10 +40,22 @@ function Section({ label, count, children }: { label: string; count: number; chi
  */
 function ShortDramaProject({ project }: { project: CanvasProject }) {
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const qc = useQueryClient();
   const { data: canvas, isLoading } = useQuery({
     queryKey: qk.canvas(project.id),
     queryFn: () => api.canvas(project.id),
     enabled: open,
+  });
+  const del = useMutation({
+    mutationFn: () => api.deleteProject(project.id),
+    onSuccess: () => {
+      setConfirming(false);
+      void qc.invalidateQueries({ queryKey: qk.projects });
+      void qc.invalidateQueries({ queryKey: qk.trashedProjects });
+      toast('已移入回收站，可在个人中心恢复');
+    },
+    onError: () => toast('删除失败，请重试'),
   });
 
   const cards = canvas?.cards ?? [];
@@ -54,16 +68,27 @@ function ShortDramaProject({ project }: { project: CanvasProject }) {
 
   return (
     <div className="short-project">
-      <button type="button" className="short-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className="short-toggle">{open ? '▾' : '▸'}</span>
-        {project.cover_asset_id ? (
-          <img className="short-cover" src={thumbURL(project.cover_asset_id)} alt="" />
-        ) : (
-          <span className="short-cover short-cover-empty">🎬</span>
-        )}
-        <span className="short-name">{project.name || '未命名短剧'}</span>
-        <span className="short-sub mono">{project.card_count} 卡</span>
-      </button>
+      <div className="short-head-row">
+        <button type="button" className="short-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          <span className="short-toggle">{open ? '▾' : '▸'}</span>
+          {project.cover_asset_id ? (
+            <img className="short-cover" src={thumbURL(project.cover_asset_id)} alt="" />
+          ) : (
+            <span className="short-cover short-cover-empty">🎬</span>
+          )}
+          <span className="short-name">{project.name || '未命名短剧'}</span>
+          <span className="short-sub mono">{project.card_count} 卡</span>
+        </button>
+        <button
+          type="button"
+          className="short-del"
+          title="删除到回收站"
+          aria-label="删除短剧"
+          onClick={() => setConfirming(true)}
+        >
+          🗑
+        </button>
+      </div>
 
       {open && (
         <div className="short-body">
@@ -107,6 +132,18 @@ function ShortDramaProject({ project }: { project: CanvasProject }) {
             </>
           )}
         </div>
+      )}
+      {confirming && (
+        <ConfirmDialog
+          title="删除短剧"
+          body={`删除「${project.name || '未命名短剧'}」？它下面的图片、分镜、成片都会隐藏，移入个人中心的回收站，可随时恢复。`}
+          confirmLabel="删除"
+          busyLabel="删除中…"
+          danger
+          busy={del.isPending}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => del.mutate()}
+        />
       )}
     </div>
   );
