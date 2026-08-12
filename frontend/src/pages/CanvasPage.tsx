@@ -22,7 +22,7 @@ import { ComposeBar } from '@/canvas/ComposeBar';
 import { FlowStatusBar } from '@/canvas/FlowStatusBar';
 import { ScriptVersionsPanel } from '@/canvas/ScriptVersionsPanel';
 import { ScriptRefinePanel } from '@/canvas/ScriptRefinePanel';
-import { LineGroups } from '@/canvas/LineGroups';
+import { LineGroups, loadCollapsed, saveCollapsed } from '@/canvas/LineGroups';
 import { ShotRefinePanel } from '@/canvas/ShotRefinePanel';
 import { activeScript, MAX_SHOTS } from '@/canvas/flow';
 import { cardTitle } from '@/canvas/cardTitle';
@@ -185,6 +185,30 @@ export function CanvasPage() {
   // 没选就是最新的那份。加镜 / 删镜 / 调镜数都作用在它名下。
   const flowScript = useMemo(() => activeScript(cards, selectedId), [cards, selectedId]);
   const flowShots = useMemo(() => (flowScript ? shotsOf(cards, flowScript.id) : []), [cards, flowScript]);
+
+  // 折叠了的创作线（按剧本 id），每 project 存 localStorage。折叠时这条线的成员卡
+  // 都藏起来，只剩 LineGroups 的一颗药丸。
+  const [collapsedLines, setCollapsedLines] = useState<ReadonlySet<string>>(() => loadCollapsed(projectId));
+  useEffect(() => { saveCollapsed(projectId, collapsedLines); }, [projectId, collapsedLines]);
+  const toggleLine = useCallback((scriptId: string) => {
+    setCollapsedLines((prev) => {
+      const next = new Set(prev);
+      if (next.has(scriptId)) next.delete(scriptId);
+      else next.add(scriptId);
+      return next;
+    });
+  }, []);
+  // 折叠线的所有成员卡（剧本自身 + refs 回它的分镜/角色/成片）都不渲染。
+  const hiddenByCollapse = useMemo(() => {
+    const hidden = new Set<string>();
+    if (!collapsedLines.size) return hidden;
+    for (const c of cards) {
+      if (c.kind === 'script' ? collapsedLines.has(c.id) : c.refs.some((r) => collapsedLines.has(r))) {
+        hidden.add(c.id);
+      }
+    }
+    return hidden;
+  }, [cards, collapsedLines]);
   // 这条线上的角色。镜头编辑器靠它列出可勾选的出场角色，所以取的是**这张镜头卡
   // 自己所属的剧本**，而不是流程条盯着的那条线——编辑器开着的时候用户完全可能
   // 去点了别的剧本卡，那时候勾选区不该跟着换一批人。
@@ -979,8 +1003,10 @@ export function CanvasPage() {
           <LineGroups
             cards={dragPos ? cards.map((c) => (c.id === dragPos.id ? { ...c, x: dragPos.x, y: dragPos.y } : c)) : cards}
             activeScriptId={flowScript?.id ?? null}
+            collapsed={collapsedLines}
+            onToggle={toggleLine}
           />
-          {cards.map((card) => {
+          {cards.filter((card) => !hiddenByCollapse.has(card.id)).map((card) => {
             const live = dragPos?.id === card.id ? { ...card, x: dragPos.x, y: dragPos.y } : card;
             return (
               <CanvasCardView
