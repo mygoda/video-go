@@ -197,12 +197,13 @@ func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetTyp
 			where = append(where, expr+` NOT IN (SELECT id FROM models WHERE protocol_family = 'compose')`)
 		}
 	}
-	// standalone 区分「生成器直接产出」与「短剧创作过程中间物」：画布里产的图
-	// （首帧、定妆图）和单镜成片都来自带 canvas_id 的任务；生成器出的图 / 视频
-	// 与上传（无 task）都不带。true=只留独立产出，把短剧过程物挡在资产库外。
+	// standalone 区分「生成器直接产出」与「短剧创作过程中间物 / 上传素材」：
+	// 只留有生成任务、且该任务不属于任何画布的产物。画布里产的图（首帧、定妆图）
+	// 带 canvas_id 被排除；上传的参考图没有生成任务（task_id 为空）也被排除——
+	// 资产库只列「用户自己生成出来的东西」，不列输入素材。
 	if standalone != nil {
 		if *standalone {
-			where = append(where, `(task_id IS NULL OR task_id IN (SELECT id FROM tasks WHERE canvas_id IS NULL))`)
+			where = append(where, `task_id IN (SELECT id FROM tasks WHERE canvas_id IS NULL)`)
 		} else {
 			where = append(where, `task_id IN (SELECT id FROM tasks WHERE canvas_id IS NOT NULL)`)
 		}
