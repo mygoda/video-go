@@ -419,6 +419,27 @@ a { color: inherit; text-decoration: none; }
 .line-group.active .line-group-title { border-color: var(--accent-border); color: var(--accent-text); }
 .line-link { stroke: var(--border-default); stroke-width: 1.5; stroke-dasharray: 5 5; opacity: .7; }
 
+/* 标题条上的折叠按钮：整层 pointer-events:none，这里单独收回来才点得到。 */
+.line-group-title { pointer-events: auto; display: inline-flex; align-items: center; gap: 4px; }
+.line-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; padding: 0; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: inherit; cursor: pointer; line-height: 1; font-size: 10px;
+}
+.line-toggle:hover { background: var(--bg-hover); }
+/* 折叠药丸：落在剧本原位，成员卡已隐藏。 */
+.line-pill {
+  position: absolute; pointer-events: auto;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 12px 0 6px;
+  background: var(--bg-elevated); border: 1px solid var(--border-default);
+  border-radius: var(--radius-full); box-shadow: var(--shadow-card);
+  font-size: var(--text-xs); color: var(--text-primary); white-space: nowrap;
+}
+.line-pill.active { border-color: var(--accent-border); }
+.line-pill-sub { color: var(--text-tertiary); font-size: var(--text-2xs); }
+
+
 /* 序号跟 .version-switch 同一套药丸样式，但落在右上角，避开左下的版本切换 */
 .pick-index {
   position: absolute; right: var(--space-2); top: 32px;
