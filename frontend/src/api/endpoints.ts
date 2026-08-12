@@ -115,6 +115,14 @@ export const api = {
   createProject: (name: string) =>
     request<CanvasProject>('/projects', { method: 'POST', body: { name } }),
 
+  // 软删：项目进回收站，其下所有资源随之从短剧 tab 消失。可在个人中心恢复。
+  deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
+
+  trashedProjects: () =>
+    request<{ items: CanvasProject[] }>('/projects?trashed=1').then((r) => r.items),
+
+  restoreProject: (id: string) => request<void>(`/projects/${id}/restore`, { method: 'POST' }),
+
   canvas: (projectId: string) => request<CanvasState>(`/projects/${projectId}/canvas`),
 
   patchCanvas: (projectId: string, base_revision: number, ops: CanvasOp[]) =>

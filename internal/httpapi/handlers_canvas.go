@@ -14,6 +14,15 @@ func (s *server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cursor, limit := pagination(r)
+	if r.URL.Query().Get("trashed") == "1" {
+		items, err := s.deps.Canvases.ListTrashedProjects(r.Context(), id.UserID)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, pageOf(items, ""))
+		return
+	}
 	page, err := s.deps.Canvases.ListProjects(r.Context(), id.UserID, cursor, limit)
 	if err != nil {
 		writeError(w, r, err)
@@ -102,6 +111,21 @@ func (s *server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deps.Canvases.DeleteProject(r.Context(), p.ID); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRestoreProject 把回收站里的项目恢复。不走 ownedProject——它只找未删的，
+// 恢复目标恰恰是已删的；归属校验放在 store 的 WHERE user_id 里。
+func (s *server) handleRestoreProject(w http.ResponseWriter, r *http.Request) {
+	id, err := identity(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := s.deps.Canvases.RestoreProject(r.Context(), id.UserID, r.PathValue("projectId")); err != nil {
 		writeError(w, r, err)
 		return
 	}

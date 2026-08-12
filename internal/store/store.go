@@ -192,6 +192,8 @@ type CanvasRepo interface {
 	ListProjects(ctx context.Context, userID, cursor string, limit int) (Page[domain.Project], error)
 	UpdateProject(ctx context.Context, p domain.Project) (domain.Project, error)
 	DeleteProject(ctx context.Context, id string) error
+	ListTrashedProjects(ctx context.Context, userID string) ([]domain.Project, error)
+	RestoreProject(ctx context.Context, userID, id string) error
 	Snapshot(ctx context.Context, projectID string) (domain.CanvasSnapshot, error)
 	ApplyOps(ctx context.Context, projectID string, baseRevision int64, ops []domain.CanvasOp) (int64, error)
 	AppendMessage(ctx context.Context, m domain.Message) (domain.Message, error)

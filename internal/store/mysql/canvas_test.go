@@ -96,6 +96,30 @@ func TestCanvasProjectCRUD(t *testing.T) {
 	}
 	requireCode(t, repo.DeleteProject(ctx, p.ID), domain.CodeNotFound)
 	requireCode(t, func() error { _, err := repo.GetProject(ctx, uid.New()); return err }(), domain.CodeNotFound)
+
+	// 软删的项目落进回收站，能列出；恢复后回到正常列表、退出回收站。
+	trash, err := repo.ListTrashedProjects(ctx, f.userID)
+	requireNoErr(t, err, "list trashed")
+	if !containsProject(trash, p.ID) {
+		t.Error("deleted project missing from ListTrashedProjects")
+	}
+	requireNoErr(t, repo.RestoreProject(ctx, f.userID, p.ID), "restore project")
+	back, err := repo.ListProjects(ctx, f.userID, "", 100)
+	requireNoErr(t, err, "list after restore")
+	if !containsProject(back.Items, p.ID) {
+		t.Error("restored project missing from ListProjects")
+	}
+	// 已恢复的再恢复、别人的项目都是 not found（归属 + 状态双重校验）。
+	requireCode(t, repo.RestoreProject(ctx, f.userID, p.ID), domain.CodeNotFound)
+}
+
+func containsProject(items []domain.Project, id string) bool {
+	for _, it := range items {
+		if it.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCanvasApplyOps 钉住乐观锁：baseRevision 对不上就是 revision_conflict，

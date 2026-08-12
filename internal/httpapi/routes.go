@@ -69,6 +69,7 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/projects/{projectId}", user(s.handleGetProject))
 	mux.Handle("PATCH /api/projects/{projectId}", user(s.handleUpdateProject))
 	mux.Handle("DELETE /api/projects/{projectId}", user(s.handleDeleteProject))
+	mux.Handle("POST /api/projects/{projectId}/restore", user(s.handleRestoreProject))
 	mux.Handle("GET /api/projects/{projectId}/canvas", user(s.handleGetCanvas))
 	mux.Handle("PATCH /api/projects/{projectId}/canvas", user(s.handlePatchCanvas))
 	mux.Handle("POST /api/canvas/{projectId}/chat", user(s.handleCanvasChat))
