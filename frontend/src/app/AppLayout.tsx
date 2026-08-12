@@ -19,7 +19,7 @@ export function AppLayout() {
     <>
       <header className="topbar">
         <div className="logo">
-          <span className="logo-mark">A</span> AIGC Pool
+          <span className="logo-mark">D</span> dreamVideo
         </div>
         <nav className="nav">
           {NAV.map((item) => (
