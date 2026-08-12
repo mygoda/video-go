@@ -110,6 +110,11 @@ type Config struct {
 	// 不是改代码。
 	StoryboardModelID string
 
+	// StoryboardVisionModelID 是「上传图片拆分镜」时用哪个视觉理解（图+文进、
+	// 文本出）模型。留空取默认 gpugeek-qwen3-vl-plus（见 000004 迁移）。不传图的
+	// 普通拆分镜仍走 StoryboardModelID，两条互不影响。
+	StoryboardVisionModelID string
+
 	// ComposeModelID 是画布一键合成默认用哪个模型，与 StoryboardModelID 同理：
 	// 留空表示「取第一个启用的 compose 族模型」。真正能转码拼接的实现接进来
 	// 之后，切过去只是改这一个变量。
@@ -131,8 +136,9 @@ func Load() (*Config, error) {
 		PublicBaseURL:     strings.TrimRight(envString("PUBLIC_BASE_URL", DefaultPublicBaseURL), "/"),
 		CORSOrigins:       splitCSV(envString("CORS_ORIGINS", DefaultCORSOrigins)),
 		AssetXAccelPrefix: strings.TrimRight(envString("ASSET_XACCEL_PREFIX", ""), "/"),
-		StoryboardModelID: envString("STORYBOARD_MODEL", ""),
-		ComposeModelID:    envString("COMPOSE_MODEL", ""),
+		StoryboardModelID:       envString("STORYBOARD_MODEL", ""),
+		StoryboardVisionModelID: envString("STORYBOARD_VISION_MODEL", "gpugeek-qwen3-vl-plus"),
+		ComposeModelID:          envString("COMPOSE_MODEL", ""),
 	}
 
 	if err := validateHTTPAddr(cfg.HTTPAddr); err != nil {

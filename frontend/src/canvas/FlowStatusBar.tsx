@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { CanvasCard } from '@/api/types';
+import { api } from '@/api/endpoints';
+import { toast } from '@/stores/toast';
 import type { FlowStepState } from './flow';
 import { currentStep, DEFAULT_SHOTS, flowSteps, MAX_SHOTS, shotCountError } from './flow';
 
@@ -28,7 +30,7 @@ interface FlowStatusBarProps {
   renderCost: number | null;
   /** 没有单独表过态的镜头，台词进不进出片 prompt */
   voiceDefault: boolean;
-  onStoryboard(count: number): void;
+  onStoryboard(count: number, imageUploadId?: string): void;
   onFirstFrames(): void;
   onRenders(): void;
   onVoiceDefault(on: boolean): void;
@@ -115,8 +117,31 @@ export function FlowStatusBar({
 /** 剧本这一步的停顿点：先决定拆几个镜头，再由用户点「继续」。 */
 function StoryboardAction({ busy, onStoryboard }: Pick<FlowStatusBarProps, 'busy' | 'onStoryboard'>) {
   const [text, setText] = useState(String(DEFAULT_SHOTS));
+  // 参考图：传了就走视觉模型看图拆分镜，让每一镜与图里的人物/场景/画风一致。
+  const [ref, setRef] = useState<{ id: string; name: string; url: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const count = Number(text);
   const error = shotCountError(count);
+
+  async function pickImage(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许再次选同一个文件
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast('参考图得是图片文件', 'danger');
+      return;
+    }
+    setUploading(true);
+    try {
+      const up = await api.upload(file);
+      setRef({ id: up.upload_id, name: file.name, url: up.preview_url });
+    } catch {
+      toast('参考图上传失败，请重试', 'danger');
+    } finally {
+      setUploading(false);
+    }
+  }
 
   return (
     <>
@@ -136,16 +161,35 @@ function StoryboardAction({ busy, onStoryboard }: Pick<FlowStatusBarProps, 'busy
         />
         个镜头
       </label>
+      <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
+      {ref ? (
+        <span className="flow-ref" title={ref.name}>
+          <img src={ref.url} alt="" />
+          参考图
+          <button type="button" className="flow-ref-x" aria-label="移除参考图" onClick={() => setRef(null)}>
+            ✕
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={uploading}
+          onClick={() => fileRef.current?.click()}
+        >
+          {uploading ? '上传中…' : '＋参考图'}
+        </button>
+      )}
       <button
         type="button"
         className="btn btn-sm btn-primary"
-        disabled={busy || error !== null}
-        onClick={() => onStoryboard(count)}
+        disabled={busy || uploading || error !== null}
+        onClick={() => onStoryboard(count, ref?.id)}
       >
-        {busy ? '拆分镜中…' : '继续：拆分镜'}
+        {busy ? '拆分镜中…' : ref ? '继续：看图拆分镜' : '继续：拆分镜'}
       </button>
       <span className={error ? 'hint danger' : 'hint'} id="flow-action-hint" role={error ? 'alert' : undefined}>
-        {error ?? '改完剧本再点，拆分镜只出文字，不花钱'}
+        {error ?? (ref ? '按参考图拆分镜，每镜与图保持一致；只出文字，不花钱' : '改完剧本再点，拆分镜只出文字，不花钱')}
       </span>
     </>
   );

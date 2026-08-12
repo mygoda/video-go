@@ -22,9 +22,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aigc-pool/aigc-pool/internal/adapter"
 	"github.com/aigc-pool/aigc-pool/internal/domain"
 	"github.com/aigc-pool/aigc-pool/internal/uid"
 )
+
+// storyboardImage 是「传图拆分镜」时随调用带上的那张参考图 + 强制走的视觉模型。
+// 为 nil 走原来的纯文本拆分镜；非 nil 时图内联进请求、模型换成视觉理解模型。
+type storyboardImage struct {
+	ref   adapter.InputRef
+	model domain.ModelConfig
+}
 
 const (
 	// storyboardMaxShots 是一次拆解最多落多少张卡片，也是入参的硬上限。
@@ -79,13 +87,18 @@ type storyboardShot struct {
 // generateStoryboard 调一次 chat 上游，把一份剧本拆成 shots 个镜头。
 //
 // 返回的 bill 已经冻好钱，调用方必须结掉它（见 chatbill.go）。
-func (s *server) generateStoryboard(ctx context.Context, call chatCall, script string, shots int, refs []domain.Card) ([]storyboardShot, chatTrace, *chatBill, error) {
-	// call.modelID 留空：分镜这一步没有给用户点名模型的位置，照旧走
-	// AIGC_STORYBOARD_MODEL → 第一个启用的 chat 模型。
+func (s *server) generateStoryboard(ctx context.Context, call chatCall, script string, shots int, refs []domain.Card, img *storyboardImage) ([]storyboardShot, chatTrace, *chatBill, error) {
 	call.step = "storyboard"
-	call.modelID = ""
-	call.prompt = storyboardPrompt(script, shots, refs)
+	call.prompt = storyboardPrompt(script, shots, refs, img != nil)
 	call.userInput = truncateRunes(strings.TrimSpace(script), storyboardInputRunes)
+	if img != nil {
+		// 传了图：强制走视觉模型、把图内联进这次调用。modelID 此时被 model 覆盖。
+		call.model = &img.model
+		call.inputs = []adapter.InputRef{img.ref}
+	} else {
+		// 没传图：照旧按 AIGC_STORYBOARD_MODEL → 第一个启用的 chat 模型选。
+		call.modelID = ""
+	}
 
 	reply, trace, bill, err := s.chatOnce(ctx, call)
 	if err != nil {
@@ -97,6 +110,64 @@ func (s *server) generateStoryboard(ctx context.Context, call chatCall, script s
 		return nil, trace, nil, err
 	}
 	return out, trace, bill, nil
+}
+
+// resolveStoryboardImage 把用户传的 upload_id 解成一张可内联的参考图 + 视觉模型。
+//
+// 校验三件事：图属于这个用户（不能拿别人的 upload_id 蹭）、是图片类型、
+// 视觉模型可用。Slot 固定 "image"，对齐 000004 迁移里视觉模型的输入槽键。
+func (s *server) resolveStoryboardImage(ctx context.Context, userID, uploadID string) (*storyboardImage, error) {
+	up, err := s.deps.Uploads.Get(ctx, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	if up.UserID != userID {
+		return nil, errFields([]domain.FieldError{{
+			Key: "image_upload_id", Message: "这张图不在你的上传里：" + uploadID,
+		}}, "参数校验未通过")
+	}
+	if !strings.HasPrefix(up.MIME, "image/") {
+		return nil, errFields([]domain.FieldError{{
+			Key: "image_upload_id", Message: fmt.Sprintf("拆分镜的参考图必须是图片，这份是 %s", up.MIME),
+		}}, "参数校验未通过")
+	}
+
+	model, err := s.storyboardVisionModel(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &storyboardImage{
+		ref: adapter.InputRef{
+			Slot:       "image",
+			URL:        up.PreviewURL,
+			StorageKey: up.StorageKey,
+			MIME:       up.MIME,
+			Bytes:      up.Bytes,
+		},
+		model: model,
+	}, nil
+}
+
+// storyboardVisionModel 取「传图拆分镜」用的视觉理解模型（AIGC_STORYBOARD_VISION_MODEL
+// → 默认 gpugeek-qwen3-vl-plus）。不查 visibility：这是服务端主动路由、非用户点名，
+// 与 chatModel 的配置分支同理（见 userChatModel 的注释）。
+func (s *server) storyboardVisionModel(ctx context.Context) (domain.ModelConfig, error) {
+	id := strings.TrimSpace(s.deps.Config.StoryboardVisionModelID)
+	if id == "" {
+		return domain.ModelConfig{}, errInvalid("未配置视觉分镜模型（AIGC_STORYBOARD_VISION_MODEL）")
+	}
+	m, err := s.deps.Models.Get(ctx, id)
+	if err != nil {
+		return domain.ModelConfig{}, err
+	}
+	if !m.Enabled {
+		return domain.ModelConfig{}, errInvalid("视觉分镜模型 %s 当前已禁用", id)
+	}
+	if m.Family != domain.FamilyChat {
+		return domain.ModelConfig{}, errInvalid(
+			"视觉分镜模型 %s 的 protocol_family 是 %s，这一步需要 chat", id, m.Family)
+	}
+	return m, nil
 }
 
 // resolveShotCount 把请求里的镜头数收敛成一个合法值。
@@ -161,9 +232,15 @@ func storyboardSource(cards []domain.Card, cardID string) (domain.Card, error) {
 //
 // （剧本那一步反过来要纯文本，理由见 script.go 的包内注释：一整篇带换行的
 // 散文塞进 JSON 字符串，模型漏转义一次就整篇作废。）
-func storyboardPrompt(script string, shots int, refs []domain.Card) string {
+func storyboardPrompt(script string, shots int, refs []domain.Card, hasImage bool) string {
 	var b strings.Builder
 	b.WriteString("你是一位分镜师。把下面这段内容拆成若干个连续的镜头。\n\n")
+	if hasImage {
+		// 图在这次请求里排在文字之前（见 000004 迁移的 mapping），模型先看到图。
+		b.WriteString("这次还附了一张参考图。先看这张图：把图里的人物外观、服装、场景、"+
+			"画风提取出来，作为整部分镜的视觉基准。每一镜的画面描述都要与这张图"+
+			"保持一致——同一个人、同一套造型、同一种画风，不要另起一套设定。\n\n")
+	}
 	b.WriteString("要求：\n")
 	b.WriteString("1. 只输出一个 JSON 数组，不要输出任何解释、前后缀或代码块标记。\n")
 	b.WriteString("2. 数组每一项形如 " +

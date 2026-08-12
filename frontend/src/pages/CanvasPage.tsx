@@ -561,12 +561,12 @@ export function CanvasPage() {
    * 发之前必须把队列冲干净：用户很可能刚改完剧本正文，那次 patch 还压在
    * 500ms 的防抖里，后端读到的会是改之前的旧稿，拆出来的镜头对不上他看见的字。
    */
-  async function runStoryboard(count: number): Promise<void> {
+  async function runStoryboard(count: number, imageUploadId?: string): Promise<void> {
     if (!flowScript || storyboarding) return;
     setStoryboarding(true);
     try {
       await flush();
-      await api.storyboard(projectId, flowScript.id, count);
+      await api.storyboard(projectId, flowScript.id, count, imageUploadId);
       await qc.invalidateQueries({ queryKey: qk.canvas(projectId) });
       // 拆完镜头把视野拉到全部内容：新镜头排在剧本下方，不 fit 的话它们全在屏外，
       // 流程条明明说「已拆 N 镜」，画布却一动不动，看起来像没生效。
@@ -999,7 +999,7 @@ export function CanvasPage() {
         renderPending={pendingRenders}
         renderCost={renderCost}
         voiceDefault={voiceDefault}
-        onStoryboard={(count) => void runStoryboard(count)}
+        onStoryboard={(count, imageUploadId) => void runStoryboard(count, imageUploadId)}
         onFirstFrames={() => void runFirstFrames()}
         onRenders={() => void runRenders()}
         onVoiceDefault={setVoiceDefault}

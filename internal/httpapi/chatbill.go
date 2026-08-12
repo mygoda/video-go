@@ -48,6 +48,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/aigc-pool/aigc-pool/internal/adapter"
 	"github.com/aigc-pool/aigc-pool/internal/billing"
 	"github.com/aigc-pool/aigc-pool/internal/capability"
 	"github.com/aigc-pool/aigc-pool/internal/domain"
@@ -80,6 +81,15 @@ type chatCall struct {
 	// 提交的那段话（见 handlers_tasks.submitTask 的 Prompt: req.Prompt），
 	// 这三条落 userInput 才是与全局一致的那个语义，不是为了遮挡开的特例。
 	userInput string
+
+	// model 若非 nil，chatOnce 直接用它、跳过 chatModel 选型。用于服务端主动
+	// 路由的场景（如拆分镜传了图 → 强制走视觉模型），这类模型不经用户点名，
+	// 因此不该过 userChatModel 的 visibility 校验。为 nil 时按 modelID 走默认选型。
+	model *domain.ModelConfig
+
+	// inputs 是随这次调用带给上游的素材（如识图用的那张图）。空则纯文本调用。
+	// 走 SubmitInput.Inputs + Blobs 的既有内联链路（见 chatcall.chatOnce）。
+	inputs []adapter.InputRef
 }
 
 // chatBill 是一次同步 chat 调用已经冻结的那笔积分。

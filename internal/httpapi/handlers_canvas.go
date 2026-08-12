@@ -327,8 +327,9 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		CardID    string `json:"card_id"`
-		ShotCount *int   `json:"shot_count"`
+		CardID        string `json:"card_id"`
+		ShotCount     *int   `json:"shot_count"`
+		ImageUploadID string `json:"image_upload_id"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, r, err)
@@ -346,6 +347,18 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx := r.Context()
 
+	// 传了图就换视觉模型、把图内联进这次拆分镜（见 storyboard.go）。没传图
+	// 一切照旧走纯文本模型。图的归属与视觉模型的可用性都在这里先挡一道。
+	var img *storyboardImage
+	if uploadID := strings.TrimSpace(req.ImageUploadID); uploadID != "" {
+		si, err := s.resolveStoryboardImage(ctx, p.UserID, uploadID)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		img = si
+	}
+
 	snap, err := s.deps.Canvas.Snapshot(ctx, p.ID)
 	if err != nil {
 		writeError(w, r, err)
@@ -361,7 +374,7 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 	// 剧本的风格来源，分镜跟着它们走才不会换一套调子。
 	shots, trace, bill, err := s.generateStoryboard(ctx,
 		chatCall{userID: p.UserID, projectID: p.ID, cardID: src.ID},
-		derefStr(src.Text), shotCount, pickCards(snap.Cards, src.Refs))
+		derefStr(src.Text), shotCount, pickCards(snap.Cards, src.Refs), img)
 	if err != nil {
 		writeError(w, r, err)
 		return

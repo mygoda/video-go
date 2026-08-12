@@ -368,7 +368,7 @@ func TestStoryboardBillRefundsUnparsableReply(t *testing.T) {
 	f.driver.reply = "抱歉，我不太理解你的要求。"
 	ctx := context.Background()
 
-	_, _, bill, err := f.srv.generateStoryboard(ctx, f.call(), "第一场 巷口，夜。", 3, nil)
+	_, _, bill, err := f.srv.generateStoryboard(ctx, f.call(), "第一场 巷口，夜。", 3, nil, nil)
 	if err == nil {
 		t.Fatal("回复解析不出镜头却返回了成功")
 	}
