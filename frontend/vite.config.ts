@@ -5,6 +5,10 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', 'VITE_');
   return {
     plugins: [react()],
+    // 打包产物放 /static 而不是默认的 /assets：应用有一个 /assets 路由（资产库），
+    // 与静态目录 /assets/ 撞名——直接访问 / 刷新 /assets 会被 nginx 当成静态目录
+    // 而 404。挪开就不撞了，/assets 稳稳落到 SPA。
+    build: { assetsDir: 'static' },
     resolve: {
       alias: { '@': new URL('./src', import.meta.url).pathname },
     },

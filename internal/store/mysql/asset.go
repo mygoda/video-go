@@ -173,7 +173,7 @@ func (r *assetRepo) Get(ctx context.Context, id string) (domain.Asset, error) {
 // 它没有可看的画面、下载和「做同款」对它也没有意义，混进瀑布流就是一块裂图。
 // 过滤放在 SQL 里而不是取出来再筛：游标分页按行数切页，筛在外面会让每页
 // 少几条、next_cursor 与实际条数对不上。显式传 type=text 仍然取得到。
-func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetType, taskID, cursor string, limit int) (store.Page[domain.Asset], error) {
+func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetType, composed *bool, taskID, cursor string, limit int) (store.Page[domain.Asset], error) {
 	if err := requireID("user id", userID); err != nil {
 		return store.Page[domain.Asset]{}, err
 	}
@@ -186,6 +186,16 @@ func (r *assetRepo) List(ctx context.Context, userID string, typ domain.AssetTyp
 		args = append(args, string(typ))
 	} else {
 		where = append(where, `type <> 'text'`)
+	}
+	// composed 区分「短剧成品」与普通视频：成品由 compose 家族模型产出，其
+	// source.model_id 落在 models(protocol_family='compose') 里。nil = 不筛。
+	if composed != nil {
+		expr := `COALESCE(JSON_UNQUOTE(JSON_EXTRACT(source, '$.model_id')), '')`
+		if *composed {
+			where = append(where, expr+` IN (SELECT id FROM models WHERE protocol_family = 'compose')`)
+		} else {
+			where = append(where, expr+` NOT IN (SELECT id FROM models WHERE protocol_family = 'compose')`)
+		}
 	}
 	if taskID != "" {
 		where = append(where, `task_id = ?`)

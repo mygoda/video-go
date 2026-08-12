@@ -8,9 +8,9 @@ import { formatBytes, formatMediaDuration } from '@/components/admin/format';
 import { useAuthStore } from '@/stores/auth';
 
 const TYPES = [
-  { value: 'all', label: '全部' },
   { value: 'image', label: '图片' },
   { value: 'video', label: '视频' },
+  { value: 'short', label: '短剧' },
 ];
 
 /** 瀑布流靠固定高度档位拉出参差，跟高保真稿一致；真实高度由 width/height 推算 */
@@ -25,7 +25,7 @@ function heightClass(asset: Asset): string {
 }
 
 export function AssetsPage() {
-  const [type, setType] = useState('all');
+  const [type, setType] = useState('image');
   const location = useLocation();
   const isAuthed = useAuthStore((s) => s.isAuthed);
   const { data: me } = useMe(isAuthed);
@@ -36,7 +36,7 @@ export function AssetsPage() {
   return (
     <main className="page">
       <h1 className="page-title">资产库</h1>
-      <p className="page-sub">全部生成产物 · 游标分页，滚动加载</p>
+      <p className="page-sub">图片 · 视频 · 短剧（合成成品）· 滚动加载</p>
 
       <div className="filter-bar">
         {TYPES.map((t) => (
