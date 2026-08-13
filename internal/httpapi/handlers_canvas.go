@@ -372,7 +372,7 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 
 	// 上下文取剧本卡自己的血缘上游：那几张卡（用户当初勾选的参考）正是这份
 	// 剧本的风格来源，分镜跟着它们走才不会换一套调子。
-	shots, trace, bill, err := s.generateStoryboard(ctx,
+	shots, chars, trace, bill, err := s.generateStoryboard(ctx,
 		chatCall{userID: p.UserID, projectID: p.ID, cardID: src.ID},
 		derefStr(src.Text), shotCount, pickCards(snap.Cards, src.Refs), img)
 	if err != nil {
@@ -381,7 +381,17 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 	}
 	logChatCall("storyboard", p.ID, trace)
 
-	cards := shotCards(shots, src.ID, snap.Cards, s.now())
+	// 角色卡（看图模式才有）先建、排在剧本下方；镜头卡并进 existing 一起算 baseY，
+	// 自然落到角色卡下面。镜头按角色名挂到角色卡（CharacterIDs），一并 apply。
+	charCards := characterCards(chars, src.ID, snap.Cards, s.now())
+	byName := make(map[string]string, len(charCards))
+	for i := range charCards {
+		byName[charCards[i].Title] = charCards[i].ID
+	}
+	existing := append(append([]domain.Card{}, snap.Cards...), charCards...)
+	shotsCards := shotCards(shots, src.ID, byName, existing, s.now())
+
+	cards := append(charCards, shotsCards...)
 	ops := make([]domain.CanvasOp, 0, len(cards))
 	cardIDs := make([]string, 0, len(cards))
 	for i := range cards {
@@ -401,7 +411,7 @@ func (s *server) handleCanvasStoryboard(w http.ResponseWriter, r *http.Request) 
 	reply, err := s.deps.Canvases.AppendMessage(ctx, domain.Message{
 		ProjectID:  p.ID,
 		Role:       domain.MessageRoleAssistant,
-		Content:    storyboardReply(src.Title, len(cards), trace.ModelID),
+		Content:    storyboardReply(src.Title, len(shotsCards), len(charCards), trace.ModelID),
 		RefCardIDs: cardIDs,
 		CreatedAt:  s.now(),
 	})

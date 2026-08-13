@@ -116,7 +116,7 @@ func TestAdminRetryRefusesStoryboardAndRefineTasks(t *testing.T) {
 		run   func(f *billFixture, ctx context.Context) (*chatBill, error)
 	}{
 		{"storyboard", storyboardTestReply, func(f *billFixture, ctx context.Context) (*chatBill, error) {
-			_, _, bill, err := f.srv.generateStoryboard(ctx, f.call(), text, 3, nil, nil)
+			_, _, _, bill, err := f.srv.generateStoryboard(ctx, f.call(), text, 3, nil, nil)
 			return bill, err
 		}},
 		{"refine", "新标题\n第一场 巷口，夜。老王撑着伞站在路灯下。", func(f *billFixture, ctx context.Context) (*chatBill, error) {
