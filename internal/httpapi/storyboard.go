@@ -82,12 +82,36 @@ type storyboardShot struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Dialogue    string `json:"dialogue"`
+	// Characters 是这一镜里出场的角色名，仅在「看图拆分镜」模式下由模型返回，
+	// 用来把镜头卡挂到对应角色卡（写进 ShotParams.CharacterIDs）。纯文本模式下
+	// 模型不返回这个字段，保持空——一致性靠角色卡，而纯文本拆分镜不建角色卡。
+	Characters []string `json:"characters"`
+}
+
+// storyboardCharacter 是「看图拆分镜」时模型从参考图里读出的一个角色的结构化外观。
+// 字段一一对齐 domain.CharacterParams：它的唯一去处就是落成角色卡，再被拼进每一镜
+// 的首帧 prompt 做一致性（见 CharacterParams 注释）。
+type storyboardCharacter struct {
+	Name   string `json:"name"`
+	Age    string `json:"age"`
+	Build  string `json:"build"`
+	Hair   string `json:"hair"`
+	Outfit string `json:"outfit"`
+	Extra  string `json:"extra"`
+}
+
+// storyboardResult 是「看图拆分镜」模式下模型返回的完整对象：先给角色、再给镜头。
+// 纯文本模式仍返回裸的 shots 数组（见 parseStoryboardShots），两条解析各走各的。
+type storyboardResult struct {
+	Characters []storyboardCharacter `json:"characters"`
+	Shots      []storyboardShot      `json:"shots"`
 }
 
 // generateStoryboard 调一次 chat 上游，把一份剧本拆成 shots 个镜头。
 //
-// 返回的 bill 已经冻好钱，调用方必须结掉它（见 chatbill.go）。
-func (s *server) generateStoryboard(ctx context.Context, call chatCall, script string, shots int, refs []domain.Card, img *storyboardImage) ([]storyboardShot, chatTrace, *chatBill, error) {
+// 传了图（img != nil）时还多要一份角色外观（storyboardCharacter），走对象解析；
+// 没传图仍是裸 shots 数组。返回的 bill 已经冻好钱，调用方必须结掉它（见 chatbill.go）。
+func (s *server) generateStoryboard(ctx context.Context, call chatCall, script string, shots int, refs []domain.Card, img *storyboardImage) ([]storyboardShot, []storyboardCharacter, chatTrace, *chatBill, error) {
 	call.step = "storyboard"
 	call.prompt = storyboardPrompt(script, shots, refs, img != nil)
 	call.userInput = truncateRunes(strings.TrimSpace(script), storyboardInputRunes)
@@ -102,14 +126,23 @@ func (s *server) generateStoryboard(ctx context.Context, call chatCall, script s
 
 	reply, trace, bill, err := s.chatOnce(ctx, call)
 	if err != nil {
-		return nil, trace, nil, err
+		return nil, nil, trace, nil, err
 	}
-	out, err := parseStoryboardShots(reply, shots)
+	var (
+		outShots []storyboardShot
+		outChars []storyboardCharacter
+	)
+	if img != nil {
+		res, perr := parseStoryboardResult(reply, shots)
+		outShots, outChars, err = res.Shots, res.Characters, perr
+	} else {
+		outShots, err = parseStoryboardShots(reply, shots)
+	}
 	if err != nil {
 		bill.refund(ctx, err)
-		return nil, trace, nil, err
+		return nil, nil, trace, nil, err
 	}
-	return out, trace, bill, nil
+	return outShots, outChars, trace, bill, nil
 }
 
 // resolveStoryboardImage 把用户传的 upload_id 解成一张可内联的参考图 + 视觉模型。
@@ -242,9 +275,23 @@ func storyboardPrompt(script string, shots int, refs []domain.Card, hasImage boo
 			"保持一致——同一个人、同一套造型、同一种画风，不要另起一套设定。\n\n")
 	}
 	b.WriteString("要求：\n")
-	b.WriteString("1. 只输出一个 JSON 数组，不要输出任何解释、前后缀或代码块标记。\n")
-	b.WriteString("2. 数组每一项形如 " +
-		"{\"title\": \"镜头标题\", \"description\": \"这个镜头的画面描述\", \"dialogue\": \"这个镜头里的台词\"}。\n")
+	if hasImage {
+		// 看图模式：多要一份角色外观，让它落成角色卡、再被每一镜的首帧 prompt 复用。
+		b.WriteString("1. 只输出一个 JSON 对象，不要输出任何解释、前后缀或代码块标记。" +
+			"形如 {\"characters\": [...], \"shots\": [...]}。\n")
+		b.WriteString("2. characters 是从参考图里读出的登场角色，每一项形如 " +
+			"{\"name\": \"角色名\", \"age\": \"年龄性别\", \"build\": \"体貌身形\", " +
+			"\"hair\": \"发型发色\", \"outfit\": \"衣着\", \"extra\": \"配饰/气质/画风\"}。" +
+			"照着图里真实的样子填，画风填进 extra。图里认得出几个人就给几个，别编。\n")
+		b.WriteString("3. shots 每一项形如 " +
+			"{\"title\": \"镜头标题\", \"description\": \"画面描述\", \"dialogue\": \"台词\", " +
+			"\"characters\": [\"这一镜出场的角色名\"]}。" +
+			"characters 里的名字必须来自上面 characters 的 name；这一镜没人出场就给空数组 []。\n")
+	} else {
+		b.WriteString("1. 只输出一个 JSON 数组，不要输出任何解释、前后缀或代码块标记。\n")
+		b.WriteString("2. 数组每一项形如 " +
+			"{\"title\": \"镜头标题\", \"description\": \"这个镜头的画面描述\", \"dialogue\": \"这个镜头里的台词\"}。\n")
+	}
 	b.WriteString("3. title 控制在 12 个字以内，description 是可以直接用于文生视频的画面描述，")
 	b.WriteString("包含主体、动作、环境、镜头语言。\n")
 	// 台词单独成字段是 shot 卡 schema 的核心（见 domain.ShotParams）：并进
@@ -254,7 +301,7 @@ func storyboardPrompt(script string, shots int, refs []domain.Card, hasImage boo
 	b.WriteString("这一镜没有台词（空镜、纯环境音）就把 dialogue 留成空字符串。\n")
 	b.WriteString(fmt.Sprintf("5. 正好拆 %d 个镜头，不多不少；如果内容很长，就挑最关键的 %d 个画面。\n",
 		shots, shots))
-	b.WriteString("6. 数组顺序就是镜号顺序，按剧情从头推到尾。\n")
+	b.WriteString("6. 镜头顺序就是镜号顺序，按剧情从头推到尾。\n")
 
 	if len(refs) > 0 {
 		b.WriteString("\n已有画布卡片（作为上下文参考，风格与设定要与它们保持一致）：\n")
@@ -314,24 +361,115 @@ func parseStoryboardShots(reply string, want int) ([]storyboardShot, error) {
 		if err := dec.Decode(&sh); err != nil {
 			break
 		}
-		desc := strings.TrimSpace(sh.Description)
-		if desc == "" {
-			continue
+		if cleaned, ok := cleanShot(sh, len(out)); ok {
+			out = append(out, cleaned)
 		}
-		title := strings.TrimSpace(sh.Title)
-		if title == "" {
-			title = fmt.Sprintf("镜头 %d", len(out)+1)
-		}
-		out = append(out, storyboardShot{
-			Title:       title,
-			Description: desc,
-			Dialogue:    strings.TrimSpace(sh.Dialogue),
-		})
 	}
 	if len(out) == 0 {
 		return nil, storyboardParseError(reply)
 	}
 	return out, nil
+}
+
+// cleanShot 规整一个模型返回的镜头：丢掉没有画面描述的，标题空了给个兜底。
+// idx 是它在已收下的镜头里的下标，用于生成兜底标题。ok=false 表示该丢弃。
+func cleanShot(sh storyboardShot, idx int) (storyboardShot, bool) {
+	desc := strings.TrimSpace(sh.Description)
+	if desc == "" {
+		return storyboardShot{}, false
+	}
+	title := strings.TrimSpace(sh.Title)
+	if title == "" {
+		title = fmt.Sprintf("镜头 %d", idx+1)
+	}
+	names := make([]string, 0, len(sh.Characters))
+	for _, n := range sh.Characters {
+		if t := strings.TrimSpace(n); t != "" {
+			names = append(names, t)
+		}
+	}
+	return storyboardShot{
+		Title:       title,
+		Description: desc,
+		Dialogue:    strings.TrimSpace(sh.Dialogue),
+		Characters:  names,
+	}, true
+}
+
+// parseStoryboardResult 解「看图拆分镜」模式下的对象回复 {characters, shots}。
+//
+// 与数组解析同样从第一个 '{' 开始读，忽略前面的客套话与 ```json 围栏。
+// 对象被 max_tokens 截断时整个 JSON 作废，因此**兜底回退**到裸数组解析：
+// 至少把 shots 抢救出来，角色卡这一层缺了不致命（一致性差一点，但画布不空）。
+func parseStoryboardResult(reply string, want int) (storyboardResult, error) {
+	start := strings.Index(reply, "{")
+	arrStart := strings.Index(reply, "[")
+	// 模型偶尔直接回了数组（没按对象格式）：那就当纯 shots 解，没有角色。
+	if start < 0 || (arrStart >= 0 && arrStart < start) {
+		shots, err := parseStoryboardShots(reply, want)
+		return storyboardResult{Shots: shots}, err
+	}
+
+	var raw storyboardResult
+	// Decoder 而不是 Unmarshal：只读一个 JSON 值就停，忽略对象后面残留的
+	// ``` 围栏或客套话（Unmarshal 见到尾巴会整段报错）。
+	dec := json.NewDecoder(strings.NewReader(reply[start:]))
+	if err := dec.Decode(&raw); err != nil {
+		// 截断/格式坏：回退抢救 shots。
+		shots, e2 := parseStoryboardShots(reply, want)
+		if e2 != nil {
+			return storyboardResult{}, storyboardParseError(reply)
+		}
+		return storyboardResult{Shots: shots}, nil
+	}
+
+	limit := want
+	if limit < 1 || limit > storyboardMaxShots {
+		limit = storyboardMaxShots
+	}
+	shots := make([]storyboardShot, 0, limit)
+	for _, sh := range raw.Shots {
+		if len(shots) >= limit {
+			break
+		}
+		if cleaned, ok := cleanShot(sh, len(shots)); ok {
+			shots = append(shots, cleaned)
+		}
+	}
+	if len(shots) == 0 {
+		return storyboardResult{}, storyboardParseError(reply)
+	}
+	return storyboardResult{Characters: cleanCharacters(raw.Characters), Shots: shots}, nil
+}
+
+// cleanCharacters 去掉无名角色、按名字去重（模型偶尔把同一个人列两遍），并限量。
+// 无名角色留着也没用：挂镜靠名字匹配，没名字既挂不上也拼不进 prompt。
+func cleanCharacters(in []storyboardCharacter) []storyboardCharacter {
+	const maxCharacters = 6 // 一部 60~90 秒短剧的主要角色数上限，防模型把路人也列成卡
+	seen := make(map[string]struct{}, len(in))
+	out := make([]storyboardCharacter, 0, len(in))
+	for _, c := range in {
+		name := strings.TrimSpace(c.Name)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, storyboardCharacter{
+			Name:   name,
+			Age:    strings.TrimSpace(c.Age),
+			Build:  strings.TrimSpace(c.Build),
+			Hair:   strings.TrimSpace(c.Hair),
+			Outfit: strings.TrimSpace(c.Outfit),
+			Extra:  strings.TrimSpace(c.Extra),
+		})
+		if len(out) >= maxCharacters {
+			break
+		}
+	}
+	return out
 }
 
 // storyboardParseError 把上游原文的头尾都带上。
@@ -363,7 +501,11 @@ func storyboardParseError(reply string) error {
 //
 // Refs 指回来源剧本卡：这是**血缘**，「这几张镜头卡是哪份剧本拆出来的」
 // 全靠它，而不是靠用户拉线。
-func shotCards(shots []storyboardShot, scriptCardID string, existing []domain.Card, now time.Time) []domain.Card {
+//
+// charByName 把「这一镜出场的角色名」翻成角色卡 id 写进 CharacterIDs：出首帧图时
+// 这些角色卡的外观会被拼进 prompt 做一致性（见 ShotParams.CharacterIDs）。为 nil
+// 或名字对不上就不挂——只挂真出场的，见那条注释「没出场的人挂上去会被画进画面」。
+func shotCards(shots []storyboardShot, scriptCardID string, charByName map[string]string, existing []domain.Card, now time.Time) []domain.Card {
 	baseY := 0.0
 	topZ := 0.0
 	for _, c := range existing {
@@ -380,6 +522,12 @@ func shotCards(shots []storyboardShot, scriptCardID string, existing []domain.Ca
 
 	out := make([]domain.Card, 0, len(shots))
 	for i, sh := range shots {
+		var charIDs []string
+		for _, name := range sh.Characters {
+			if id, ok := charByName[name]; ok {
+				charIDs = append(charIDs, id)
+			}
+		}
 		out = append(out, domain.Card{
 			ID:    uid.New(),
 			Kind:  domain.CardKindShot,
@@ -390,9 +538,10 @@ func shotCards(shots []storyboardShot, scriptCardID string, existing []domain.Ca
 			H:     shotCardH,
 			Z:     topZ + 1 + float64(i),
 			Params: shotCardParams(domain.ShotParams{
-				ShotNo:      i + 1,
-				Description: sh.Description,
-				Dialogue:    sh.Dialogue,
+				ShotNo:       i + 1,
+				Description:  sh.Description,
+				Dialogue:     sh.Dialogue,
+				CharacterIDs: charIDs,
 			}),
 			Refs:       []string{scriptCardID},
 			History:    []domain.CardVersion{},
@@ -401,6 +550,67 @@ func shotCards(shots []storyboardShot, scriptCardID string, existing []domain.Ca
 		})
 	}
 	return out
+}
+
+// characterCards 把模型从参考图里读出的角色铺成画布上的一排角色卡。
+//
+// 排在被拆的剧本卡下方、镜头卡上方（调用方把它们并进 existing 再算镜头的 baseY，
+// 镜头自然落到角色卡下面）。Refs 指回剧本卡：与镜头同一套血缘约定，前端
+// charactersOf 靠 refs.includes(scriptId) 把角色归到这条创作线。
+func characterCards(chars []storyboardCharacter, scriptCardID string, existing []domain.Card, now time.Time) []domain.Card {
+	baseY := 0.0
+	topZ := 0.0
+	for _, c := range existing {
+		if bottom := c.Y + c.H; bottom > baseY {
+			baseY = bottom
+		}
+		if c.Z > topZ {
+			topZ = c.Z
+		}
+	}
+	if len(existing) > 0 {
+		baseY += canvasCardGap * 2
+	}
+
+	out := make([]domain.Card, 0, len(chars))
+	for i, c := range chars {
+		out = append(out, domain.Card{
+			ID:    uid.New(),
+			Kind:  domain.CardKindCharacter,
+			Title: c.Name,
+			X:     float64(i) * (shotCardW + canvasCardGap),
+			Y:     baseY,
+			W:     shotCardW,
+			H:     shotCardH,
+			Z:     topZ + 1 + float64(i),
+			Params: characterCardParams(domain.CharacterParams{
+				Name:   c.Name,
+				Age:    c.Age,
+				Build:  c.Build,
+				Hair:   c.Hair,
+				Outfit: c.Outfit,
+				Extra:  c.Extra,
+			}),
+			Refs:       []string{scriptCardID},
+			History:    []domain.CardVersion{},
+			AutoPlaced: true,
+			CreatedAt:  now,
+		})
+	}
+	return out
+}
+
+// characterCardParams 把 CharacterParams 摊成 Card.Params 的 map，理由同 shotCardParams。
+func characterCardParams(cp domain.CharacterParams) map[string]any {
+	raw, err := json.Marshal(cp)
+	if err != nil {
+		panic("httpapi: marshal CharacterParams: " + err.Error())
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		panic("httpapi: unmarshal CharacterParams: " + err.Error())
+	}
+	return m
 }
 
 // shotCardParams 把 ShotParams 摊成 Card.Params 的 map 形态。
@@ -427,8 +637,14 @@ func shotCardParams(sp domain.ShotParams) map[string]any {
 //
 // 明说"没有生成任何画面"：用户对这条链路的既有预期是"一说话就开始出片"，
 // 不点破的话，他会盯着画布等一批永远不会出现的视频卡。
-func storyboardReply(scriptTitle string, n int, modelID string) string {
-	return fmt.Sprintf("已用 %s 把《%s》拆成 %d 个镜头，都在画布上，"+
+func storyboardReply(scriptTitle string, n, nChars int, modelID string) string {
+	chars := ""
+	if nChars > 0 {
+		// 看图模式：额外识别出角色并挂到了对应镜头，一致性靠它。
+		chars = fmt.Sprintf("并从参考图里识别出 %d 个角色（已落成角色卡、挂到出场的镜头上，"+
+			"出首帧时会自动保持一致）；", nChars)
+	}
+	return fmt.Sprintf("已用 %s 把《%s》拆成 %d 个镜头，%s都在画布上，"+
 		"每一镜的画面描述和台词都可以直接改。这一步只落文字，没有出图也没有出片；"+
-		"改顺了之后再挑镜头去生成画面。", modelID, scriptTitle, n)
+		"改顺了之后再挑镜头去生成画面。", modelID, scriptTitle, n, chars)
 }

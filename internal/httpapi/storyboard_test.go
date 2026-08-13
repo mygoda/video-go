@@ -175,7 +175,7 @@ func TestShotCards(t *testing.T) {
 		{Title: "收尾", Description: "两人并肩走远", Dialogue: "走吧"},
 	}
 
-	cards := shotCards(shots, script.ID, []domain.Card{script}, time.Now())
+	cards := shotCards(shots, script.ID, nil, []domain.Card{script}, time.Now())
 	if len(cards) != 3 {
 		t.Fatalf("got %d cards, want 3", len(cards))
 	}
@@ -264,5 +264,73 @@ func TestStoryboardSource(t *testing.T) {
 				t.Errorf("error does not point at card_id: %+v", de.FieldErrors)
 			}
 		})
+	}
+}
+
+// TestParseStoryboardResult 钉住「看图拆分镜」的对象解析：角色与镜头都取出来，
+// 角色按名去重，镜头带出场角色名；对象被截断/回退成裸数组时至少抢救出镜头。
+func TestParseStoryboardResult(t *testing.T) {
+	reply := "```json\n{\"characters\":[" +
+		"{\"name\":\"沈昭昭\",\"age\":\"28岁女\",\"hair\":\"黑色高马尾\",\"outfit\":\"红围巾\",\"extra\":\"棋盘格画风\"}," +
+		"{\"name\":\"沈昭昭\",\"age\":\"28岁女\"}]," + // 重名，应被去重
+		"\"shots\":[" +
+		"{\"title\":\"苏醒\",\"description\":\"她在格子地上睁眼\",\"dialogue\":\"我在哪\",\"characters\":[\"沈昭昭\"]}," +
+		"{\"title\":\"空镜\",\"description\":\"棋盘街道延伸\",\"dialogue\":\"\",\"characters\":[]}]}\n```"
+
+	res, err := parseStoryboardResult(reply, 3)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(res.Characters) != 1 {
+		t.Fatalf("characters = %d, want 1 (deduped by name)", len(res.Characters))
+	}
+	if res.Characters[0].Name != "沈昭昭" || res.Characters[0].Hair != "黑色高马尾" {
+		t.Errorf("character fields lost: %+v", res.Characters[0])
+	}
+	if len(res.Shots) != 2 {
+		t.Fatalf("shots = %d, want 2", len(res.Shots))
+	}
+	if len(res.Shots[0].Characters) != 1 || res.Shots[0].Characters[0] != "沈昭昭" {
+		t.Errorf("shot 0 character names lost: %v", res.Shots[0].Characters)
+	}
+	if len(res.Shots[1].Characters) != 0 {
+		t.Errorf("shot 1 should have no characters, got %v", res.Shots[1].Characters)
+	}
+
+	// 回退：模型没按对象格式、直接回了裸数组，也要能抢救出镜头（无角色）。
+	bare := "[{\"title\":\"x\",\"description\":\"一个画面\",\"dialogue\":\"\"}]"
+	res2, err := parseStoryboardResult(bare, 3)
+	if err != nil {
+		t.Fatalf("array fallback failed: %v", err)
+	}
+	if len(res2.Shots) != 1 || len(res2.Characters) != 0 {
+		t.Errorf("array fallback: shots=%d chars=%d, want 1/0", len(res2.Shots), len(res2.Characters))
+	}
+}
+
+// TestShotCardsCharacterLink 钉住按角色名挂镜：出场的挂上对应角色卡 id，
+// 名字对不上的不挂——没出场的人挂上去，出首帧时会被模型画进画面（见 CharacterIDs 注释）。
+func TestShotCardsCharacterLink(t *testing.T) {
+	shots := []storyboardShot{
+		{Title: "a", Description: "甲出场", Characters: []string{"甲"}},
+		{Title: "b", Description: "无人空镜", Characters: nil},
+		{Title: "c", Description: "路人乙", Characters: []string{"查无此人"}},
+	}
+	byName := map[string]string{"甲": "char_jia"}
+	cards := shotCards(shots, "s1", byName, nil, time.Now())
+
+	want := [][]string{{"char_jia"}, nil, nil}
+	for i, c := range cards {
+		sp, err := domain.ParseShotParams(c.Params)
+		if err != nil {
+			t.Fatalf("card %d params rejected: %v", i, err)
+		}
+		if len(sp.CharacterIDs) != len(want[i]) {
+			t.Errorf("card %d character_ids = %v, want %v", i, sp.CharacterIDs, want[i])
+			continue
+		}
+		if len(want[i]) == 1 && sp.CharacterIDs[0] != want[i][0] {
+			t.Errorf("card %d character_ids = %v, want %v", i, sp.CharacterIDs, want[i])
+		}
 	}
 }
